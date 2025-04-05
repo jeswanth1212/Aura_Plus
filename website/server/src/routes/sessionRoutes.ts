@@ -7,8 +7,15 @@ const router = express.Router();
 // Determine if we're in development mode
 const isDevelopment = process.env.NODE_ENV === 'development';
 
-// Use proper auth in production, but optionalAuth in development
-router.use(isDevelopment ? optionalAuth : protect);
+// Apply authentication middleware to all routes
+// In development, we'll use optionalAuth to allow testing without tokens
+if (isDevelopment) {
+  router.use(optionalAuth);
+  console.log('Using optional auth middleware for development');
+} else {
+  router.use(protect);
+  console.log('Using strict auth middleware for production');
+}
 
 // Middleware to add mock user in development mode if no user is authenticated
 router.use((req, res, next) => {
@@ -41,14 +48,20 @@ router.get('/:sessionId', getSession);
 router.post('/sync', async (req, res) => {
   try {
     const { sessionData } = req.body;
-    const userId = req.user?._id;
+    
+    // For development, create a mock user ID if not authenticated
+    let userId = req.user?._id;
+    if (isDevelopment && !userId) {
+      userId = 'dev_user_123'; // Mock user ID for development
+      console.log('Development mode: Using mock user ID:', userId);
+    }
     
     if (!sessionData) {
       return res.status(400).json({ error: 'Session data is required' });
     }
     
     if (!userId) {
-      return res.status(401).json({ error: 'User ID is required' });
+      return res.status(401).json({ error: 'User ID is required', message: 'Authentication required' });
     }
     
     // Log the sync operation in development mode

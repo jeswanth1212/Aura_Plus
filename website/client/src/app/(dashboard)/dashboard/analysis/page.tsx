@@ -365,8 +365,8 @@ export default function AnalysisPage() {
   // Function to sync a session with the backend
   const syncSessionWithBackend = async (session: SessionData) => {
     try {
-      // Get auth token from localStorage or use demo token in development
-      let token = localStorage.getItem('auth_token');
+      // Get auth token from localStorage (using correct key 'token' not 'auth_token')
+      let token = localStorage.getItem('token');
       
       // For development
       if (!token || token === 'null' || token === 'undefined') {
@@ -411,7 +411,7 @@ export default function AnalysisPage() {
         updateLocalSessionWithSyncInfo(session.id, data.sessionId);
         
         return data.sessionId;
-      } catch (fetchError) {
+      } catch (fetchError: any) {
         console.warn("Server connection failed. Using client-only storage.", fetchError);
         // Create a fallback response for development mode
         return createLocalFallbackResponse(session.id);
