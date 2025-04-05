@@ -323,6 +323,26 @@ const apiUtils = {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 second timeout
         
+        // Check if server is reachable first with a HEAD request
+        let isServerReachable = false;
+        try {
+          const pingResponse = await fetch(`${apiUrl}/api/health`, {
+            method: 'HEAD',
+            signal: controller.signal,
+          });
+          isServerReachable = pingResponse.ok;
+        } catch (pingError) {
+          console.warn(`Server at ${apiUrl} is not reachable:`, pingError);
+          isServerReachable = false;
+          // Don't return yet, we'll proceed with the full logic but expect failure
+        }
+        
+        // If server is not reachable, fall back to local storage immediately
+        if (!isServerReachable) {
+          console.warn(`Server at ${apiUrl} is not reachable, using local storage fallback`);
+          return this.createLocalFallbackResponse(sessionToSync.id);
+        }
+        
         // Make the API call with proper auth headers
         const response = await fetch(`${apiUrl}/api/sessions/sync`, {
           method: 'POST',
@@ -349,7 +369,7 @@ const apiUtils = {
         this.updateLocalSessionWithSyncInfo(sessionToSync.id, data.sessionId);
         return data.sessionId;
       } catch (fetchError: any) {
-        console.warn("Server connection failed. Using client-only storage.", fetchError);
+        console.warn("Server connection failed. Using client-only storage:", fetchError.message);
         // Create a fallback response for development mode
         return this.createLocalFallbackResponse(sessionToSync.id);
       }
