@@ -22,31 +22,6 @@ export default function LandingPage() {
   
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Header */}
-      <header className="bg-white shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
-          <div className="flex items-center">
-            <h1 className="text-xl font-bold text-purple-700">Aura Plus</h1>
-          </div>
-          <nav className="flex items-center space-x-4">
-            <a 
-              href="/login"
-              onClick={clearAuthCookies}
-              className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium"
-            >
-              Login
-            </a>
-            <a
-              href="/register"
-              onClick={clearAuthCookies}
-              className="bg-purple-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-purple-700"
-            >
-              Sign Up
-            </a>
-          </nav>
-        </div>
-      </header>
-      
       {/* Hero Section */}
       <main className="flex-grow">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 md:py-24">
