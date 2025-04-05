@@ -199,62 +199,63 @@ const apiUtils = {
   // Gemini AI for generating responses
   async generateResponse(history: Message[]): Promise<string> {
     try {
-      if (!GEMINI_API_KEY) {
-        throw new Error('GEMINI_API_KEY not configured');
-      }
-      
-      // Format the history for Gemini API
-      const formattedHistory = history.map(msg => ({
-        role: msg.role === 'user' ? 'user' : 'model',
-        parts: [{ text: msg.content }]
-      }));
-      
+      console.log("Generating AI response...");
+
       // Get the last user message
       const lastMessage = history.length > 0 ? history[history.length - 1] : null;
       const promptText = lastMessage && lastMessage.role === 'user' ? lastMessage.content : "How are you feeling today?";
       
-      // Call Gemini API
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: promptText }]
-            }
-          ],
-          generationConfig: {
-            temperature: 0.7,
-            topK: 40,
-            topP: 0.95,
-            maxOutputTokens: 100,
+      // Use consistent model name with what works in the analysis page
+      const modelName = "gemini-1.5-pro";
+      
+      // API call to Gemini
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1/models/${modelName}:generateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
           },
-          systemInstruction: {
-            parts: [{ text: 'You are Aura, an AI therapist. Keep responses brief (1-2 sentences).' }]
-          }
-        })
-      });
+          body: JSON.stringify({
+            contents: [
+              {
+                role: "user",
+                parts: [
+                  {
+                    text: `You are a Therapist. Respond to the following text in a helpful and empathetic manner: ${promptText}`,
+                  },
+                ],
+              },
+            ],
+            generationConfig: {
+              temperature: 0.7,
+              topK: 40,
+              topP: 0.95,
+              maxOutputTokens: 1024,
+            },
+          }),
+        }
+      );
       
+      // Check for HTTP errors
       if (!response.ok) {
-        throw new Error(`Gemini API error: ${response.status} ${response.statusText}`);
+        const errorText = await response.text();
+        console.error(`Gemini API error (${response.status}):`, errorText);
+        return "Sorry, I couldn't generate a response. Please try again later.";
       }
-      
+
       const data = await response.json();
       
       if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
-        throw new Error('Invalid response from Gemini API');
+        console.error("Invalid response from Gemini API:", data);
+        return "Sorry, I couldn't generate a proper response. Please try again later.";
       }
       
-      const responseText = data.candidates[0].content.parts[0].text;
-      console.log('✅ Generated AI response:', responseText);
-      
-      return responseText;
+      const aiResponse = data.candidates[0].content.parts[0].text;
+      return aiResponse;
     } catch (error) {
-      console.error('❌ Error generating AI response:', error);
-      return "I understand you're sharing something important. Can we explore that further?";
+      console.error("Error generating AI response:", error);
+      return "Sorry, I couldn't generate a response due to an error. Please try again later.";
     }
   },
   
@@ -298,6 +299,47 @@ const apiUtils = {
     } catch (error) {
       console.error('❌ Error in text-to-speech conversion:', error);
       throw error;
+    }
+  },
+  
+  async syncWithBackend(sessionToSync: SessionData): Promise<string | null> {
+    try {
+      // Get auth token from localStorage or use demo token in development
+      let token = localStorage.getItem('auth_token');
+      
+      // For development
+      if (!token || token === 'null' || token === 'undefined') {
+        console.log("Using demo token for development");
+        token = "demo_development_token";
+      }
+      
+      // Get API URL from env or default to localhost
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3005';
+      
+      // Make the API call with proper auth headers
+      const response = await fetch(`${apiUrl}/api/sessions/sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          sessionData: sessionToSync
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.text();
+        console.error(`Session sync failed (${response.status}):`, errorData);
+        return null;
+      }
+      
+      const data = await response.json();
+      console.log('Session synced successfully:', data);
+      return data.sessionId;
+    } catch (error) {
+      console.error('Error syncing session with backend:', error);
+      return null;
     }
   }
 };
@@ -443,17 +485,20 @@ const storageUtils = {
       }
       
       // Get the API URL from environment or use default
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3005';
       
-      // Try to get auth token if available (optional for now)
+      // Try to get auth token if available
       const token = localStorage.getItem('aura_auth_token');
+      
+      // Create a demo token if none exists (for development only)
+      const demoToken = 'demo_token_' + Math.random().toString(36).substring(2, 9);
       
       // Make API call to sync session
       const response = await fetch(`${apiUrl}/api/sessions/sync`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': token ? `Bearer ${token}` : ''
+          'Authorization': token ? `Bearer ${token}` : `Bearer ${demoToken}` // Always include some token
         },
         body: JSON.stringify({
           sessionData: session
@@ -500,6 +545,8 @@ export default function Dashboard() {
   const [textResponse, setTextResponse] = useState<string>("");
   const [conversationHistory, setConversationHistory] = useState<Message[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [isGeneratingAIResponse, setIsGeneratingAIResponse] = useState<boolean>(false);
+  const [aIChatMessage, setAIChatMessage] = useState<string>("");
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -787,8 +834,11 @@ export default function Dashboard() {
         setState(ConversationState.LISTENING);
       }
       
+      // Add to storage
+      storageUtils.saveSession(currentSession);
+      
       // Optional: Sync with backend if needed
-      storageUtils.syncWithBackend(currentSessionId);
+      apiUtils.syncWithBackend(currentSession);
     } catch (error) {
       console.error('❌ Error processing conversation:', error);
       setErrorMessage('Failed to process your message. Please try again.');

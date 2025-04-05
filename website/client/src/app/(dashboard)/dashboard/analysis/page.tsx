@@ -181,7 +181,10 @@ export default function AnalysisPage() {
 
   // Function to analyze a session with AI
   const analyzeSessionWithAI = useCallback(async (session: SessionData): Promise<SessionAnalysis> => {
-    if (!GEMINI_API_KEY) {
+    // Use environment variable directly
+    const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+    
+    if (!apiKey) {
       console.warn('GEMINI_API_KEY not found, using mock analysis');
       return generateMockAnalysis(session);
     }
@@ -230,8 +233,11 @@ export default function AnalysisPage() {
       Note that the sentiment values should sum to 1 exactly. Include 3-5 main themes with their strength (0-1 scale), and provide 2-3 personalized therapy recommendations based on the conversation content.
       `;
       
+      // Use the model name known to work
+      const modelName = "gemini-1.5-pro";
+      
       // Call Gemini API
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro:generateContent?key=${GEMINI_API_KEY}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/${modelName}:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -252,10 +258,17 @@ export default function AnalysisPage() {
       });
       
       if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
+        const errorText = await response.text();
+        console.error(`Gemini API error (${response.status}):`, errorText);
+        throw new Error(`API error: ${response.status} - ${errorText}`);
       }
       
       const data = await response.json();
+      
+      if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
+        console.error('Invalid response structure from Gemini API:', data);
+        throw new Error('Failed to get valid response from AI model');
+      }
       
       // Extract the response text
       const responseText = data.candidates[0].content.parts[0].text;
@@ -267,6 +280,9 @@ export default function AnalysisPage() {
       }
       
       const analysisData = JSON.parse(jsonMatch[0]);
+      
+      // Also sync the session with the backend
+      syncSessionWithBackend(session);
       
       return {
         sentiment: {
@@ -291,6 +307,57 @@ export default function AnalysisPage() {
       return generateMockAnalysis(session);
     }
   }, []);
+
+  // Function to sync a session with the backend
+  const syncSessionWithBackend = async (session: SessionData) => {
+    try {
+      // Get auth token from localStorage or use demo token in development
+      let token = localStorage.getItem('auth_token');
+      
+      // For development
+      if (!token || token === 'null' || token === 'undefined') {
+        console.log("Using demo token for development");
+        token = "demo_development_token";
+      }
+      
+      // Get API URL from env or default to localhost
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3005';
+      
+      // Make the API call with proper auth headers
+      const response = await fetch(`${apiUrl}/api/sessions/sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          sessionData: session
+        })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.text();
+        console.error(`Session sync failed (${response.status}):`, errorData);
+        return null;
+      }
+      
+      const data = await response.json();
+      console.log('Session synced successfully:', data);
+      
+      // Mark the session as synced in localStorage
+      const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
+      if (allSessions[session.id]) {
+        allSessions[session.id].synced = true;
+        allSessions[session.id].serverSessionId = data.sessionId;
+        localStorage.setItem('aura_sessions', JSON.stringify(allSessions));
+      }
+      
+      return data.sessionId;
+    } catch (error) {
+      console.error('Error syncing session with backend:', error);
+      return null;
+    }
+  };
 
   // Load sessions and set up event listener for session updates
   useEffect(() => {

@@ -1,26 +1,69 @@
 import express from 'express';
 import { startSession, sendMessage, endSession, getSession } from '../controllers/sessionController';
-import { protect } from '../middleware/auth';
+import { protect, optionalAuth } from '../middleware/auth';
 
 const router = express.Router();
 
-// All session routes require auth
-router.use(protect);
+// Determine if we're in development mode
+const isDevelopment = process.env.NODE_ENV === 'development';
+
+// Use proper auth in production, but optionalAuth in development
+router.use(isDevelopment ? optionalAuth : protect);
+
+// Middleware to add mock user in development mode if no user is authenticated
+router.use((req, res, next) => {
+  if (isDevelopment && !req.user) {
+    console.log('Development mode: Adding mock user');
+    // Create a mock user
+    req.user = {
+      _id: '000000000000000000000000', // Mock ObjectId
+      name: 'Development User',
+      email: 'dev@example.com',
+      isVerified: true,
+      password: '',
+      verificationToken: '',
+      resetPasswordToken: '',
+      resetPasswordExpire: undefined,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+  }
+  next();
+});
 
 // Session routes
 router.post('/start', startSession);
-router.post('/message', sendMessage);
-router.post('/end', endSession);
+router.post('/message/:sessionId', sendMessage);
+router.post('/end/:sessionId', endSession);
 router.get('/:sessionId', getSession);
 
 // New route for syncing client-side sessions
 router.post('/sync', async (req, res) => {
   try {
     const { sessionData } = req.body;
-    const userId = req.user._id;
+    const userId = req.user?._id;
     
     if (!sessionData) {
       return res.status(400).json({ error: 'Session data is required' });
+    }
+    
+    if (!userId) {
+      return res.status(401).json({ error: 'User ID is required' });
+    }
+    
+    // Log the sync operation in development mode
+    if (isDevelopment) {
+      console.log('Development mode: Session sync received', {
+        clientSessionId: sessionData.id,
+        userId
+      });
+      
+      // In development mode, just return success with dummy MongoDB ID
+      return res.status(200).json({
+        success: true,
+        sessionId: `dev_${sessionData.id}`,
+        message: 'Session synced successfully in development mode'
+      });
     }
     
     // Convert the client-side session to match the MongoDB schema
@@ -85,7 +128,21 @@ router.post('/sync', async (req, res) => {
 // Get all sessions for the current user
 router.get('/', async (req, res) => {
   try {
-    const userId = req.user._id;
+    const userId = req.user?._id;
+    
+    if (!userId) {
+      return res.status(401).json({ error: 'User ID is required' });
+    }
+    
+    // In development mode, return empty array
+    if (isDevelopment) {
+      console.log('Development mode: Returning empty sessions array');
+      return res.status(200).json({
+        success: true,
+        count: 0,
+        data: []
+      });
+    }
     
     const sessions = await import('../models/Session').then(
       module => module.Session.find({ userId })
