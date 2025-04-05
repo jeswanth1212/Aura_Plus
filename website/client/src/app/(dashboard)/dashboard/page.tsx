@@ -316,30 +316,69 @@ const apiUtils = {
       // Get API URL from env or default to localhost
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3005';
       
-      // Make the API call with proper auth headers
-      const response = await fetch(`${apiUrl}/api/sessions/sync`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          sessionData: sessionToSync
-        })
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.text();
-        console.error(`Session sync failed (${response.status}):`, errorData);
-        return null;
+      try {
+        console.log(`Attempting to sync session to ${apiUrl}/api/sessions/sync`);
+        
+        // Set a timeout for the request to prevent long hangs
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 second timeout
+        
+        // Make the API call with proper auth headers
+        const response = await fetch(`${apiUrl}/api/sessions/sync`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            sessionData: sessionToSync
+          }),
+          signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          const errorData = await response.text();
+          console.error(`Session sync failed (${response.status}):`, errorData);
+          return this.createLocalFallbackResponse(sessionToSync.id);
+        }
+        
+        const data = await response.json();
+        console.log('Session synced successfully:', data);
+        this.updateLocalSessionWithSyncInfo(sessionToSync.id, data.sessionId);
+        return data.sessionId;
+      } catch (fetchError) {
+        console.warn("Server connection failed. Using client-only storage.", fetchError);
+        // Create a fallback response for development mode
+        return this.createLocalFallbackResponse(sessionToSync.id);
       }
-      
-      const data = await response.json();
-      console.log('Session synced successfully:', data);
-      return data.sessionId;
     } catch (error) {
-      console.error('Error syncing session with backend:', error);
+      console.error('Error in syncWithBackend:', error);
       return null;
+    }
+  },
+  
+  // Helper function to create a fallback response when server is unavailable
+  createLocalFallbackResponse(sessionId: string): string {
+    // Generate a fake MongoDB-like ID for development use
+    const mockId = `local_${Date.now()}_${sessionId}`;
+    
+    // Mark session as handled locally
+    this.updateLocalSessionWithSyncInfo(sessionId, mockId);
+    
+    console.log(`Created local fallback session ID: ${mockId}`);
+    return mockId;
+  },
+  
+  // Helper to update localStorage with sync info
+  updateLocalSessionWithSyncInfo(sessionId: string, serverId: string): void {
+    const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
+    if (allSessions[sessionId]) {
+      allSessions[sessionId].synced = true;
+      allSessions[sessionId].serverSessionId = serverId;
+      allSessions[sessionId].syncedAt = new Date().toISOString();
+      localStorage.setItem('aura_sessions', JSON.stringify(allSessions));
     }
   }
 };
@@ -484,47 +523,9 @@ const storageUtils = {
         return false;
       }
       
-      // Get the API URL from environment or use default
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3005';
-      
-      // Try to get auth token if available
-      const token = localStorage.getItem('aura_auth_token');
-      
-      // Create a demo token if none exists (for development only)
-      const demoToken = 'demo_token_' + Math.random().toString(36).substring(2, 9);
-      
-      // Make API call to sync session
-      const response = await fetch(`${apiUrl}/api/sessions/sync`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': token ? `Bearer ${token}` : `Bearer ${demoToken}` // Always include some token
-        },
-        body: JSON.stringify({
-          sessionData: session
-        })
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Failed to sync session:', errorData);
-        return false;
-      }
-      
-      const data = await response.json();
-      console.log('Session synced successfully:', data);
-      
-      // Update session with MongoDB ID if needed
-      if (data.sessionId) {
-        const updatedSession = this.getSession(sessionId);
-        if (updatedSession) {
-          updatedSession.metadata = updatedSession.metadata || {};
-          updatedSession.metadata.mongoDbId = data.sessionId;
-          this.saveSession(updatedSession);
-        }
-      }
-      
-      return true;
+      // Use the API utility to sync the session, which now has proper error handling
+      const result = await apiUtils.syncWithBackend(session);
+      return !!result; // Return true if we got a valid result
     } catch (error) {
       console.error('Error syncing session to backend:', error);
       return false;
@@ -547,10 +548,35 @@ export default function Dashboard() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [isGeneratingAIResponse, setIsGeneratingAIResponse] = useState<boolean>(false);
   const [aIChatMessage, setAIChatMessage] = useState<string>("");
+  const [serverAvailable, setServerAvailable] = useState<boolean | null>(null);
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+
+  // Check server availability on load
+  useEffect(() => {
+    const checkServerAvailability = async () => {
+      try {
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3005';
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        
+        const response = await fetch(`${apiUrl}/api/health`, {
+          method: 'GET',
+          signal: controller.signal
+        }).catch(() => null);
+        
+        clearTimeout(timeoutId);
+        setServerAvailable(!!response && response.ok);
+      } catch (error) {
+        console.warn("Server availability check failed:", error);
+        setServerAvailable(false);
+      }
+    };
+    
+    checkServerAvailability();
+  }, []);
 
   // Clean up function for audio and streams
   const cleanupAudioResources = () => {
@@ -1045,6 +1071,17 @@ export default function Dashboard() {
   return (
     <div className="p-4 md:p-8">
       <div className="max-w-4xl mx-auto">
+        {serverAvailable === false && (
+          <div className="bg-amber-50 border border-amber-300 p-4 rounded-lg mb-6">
+            <h3 className="text-amber-800 font-medium mb-1">Server Unavailable</h3>
+            <p className="text-amber-700 text-sm">
+              The app is currently operating in offline mode. Your conversations will be stored locally, 
+              but sync with the server is unavailable. Start the server with <code className="bg-amber-100 px-1 rounded">npm run dev</code> 
+              in the server directory to enable full functionality.
+            </p>
+          </div>
+        )}
+      
         <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Voice Therapy Session</h1>
           <p className="text-gray-600">{getStatusMessage()}</p>

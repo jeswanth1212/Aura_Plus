@@ -52,6 +52,28 @@ An AI-powered therapy platform offering conversational mental health support.
 
    Open your browser and navigate to: http://localhost:3000
 
+## Troubleshooting
+
+### Connection Refused Errors
+
+If you see errors like `POST http://localhost:3005/api/sessions/sync net::ERR_CONNECTION_REFUSED`:
+
+1. **Server Not Running**: Make sure the server is running with `npm run dev` in the `website/server` directory.
+
+2. **Offline Mode**: The application will automatically switch to offline mode if the server is unavailable. You'll see a yellow notification bar at the top of the dashboard and analysis pages.
+
+3. **Port Conflict**: If port 3005 is already in use, you can change it in the server's `.env` file. Remember to update the client's `.env.local` file to match.
+
+4. **Firewall Issues**: Make sure your firewall isn't blocking connections to localhost:3005.
+
+### MongoDB Connection Issues
+
+If you're having issues with MongoDB connections:
+
+1. **Local Development**: You can run without a MongoDB connection in development mode. The server will use mock data.
+
+2. **Connection String**: Make sure your MongoDB connection string in the server's `.env` file is correct.
+
 ## Development Notes
 
 ### Authentication in Development Mode
@@ -69,4 +91,5 @@ An AI-powered therapy platform offering conversational mental health support.
 
 - Sessions are stored in localStorage with the key `aura_sessions`
 - The format is an object with session IDs as keys
-- A separate `user_sessions` list keeps track of all sessions for a user 
+- A separate `user_sessions` list keeps track of all sessions for a user
+- In offline mode, the app will still function using localStorage only 
