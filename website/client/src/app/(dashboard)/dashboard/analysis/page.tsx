@@ -158,7 +158,7 @@ export default function AnalysisPage() {
           },
           {
             role: 'assistant',
-            content: 'Opening up about your workload is a great step. Clear communication can help set realistic expectations and might even lead to better distribution of tasks. What's been holding you back from discussing this with your team?',
+            content: 'Opening up about your workload is a great step. Clear communication can help set realistic expectations and might even lead to better distribution of tasks. What\'s been holding you back from discussing this with your team?',
             timestamp: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000 + 70 * 1000)
           }
         ]
