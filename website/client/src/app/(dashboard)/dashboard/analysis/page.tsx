@@ -45,34 +45,32 @@ interface SessionAnalysis {
   lastUpdated?: Date;
 }
 
-// Define interface for aggregate analysis
 interface AggregateAnalysis {
   overallSentiment: {
     positive: number;
     neutral: number;
     negative: number;
   };
-  topThemes: Array<{
+  commonThemes: Array<{
     name: string;
-    frequency: number;
-    strength: number;
+    frequency: number; // How many sessions mention this theme
+    averageStrength: number;
   }>;
-  progressMetrics: {
-    sessionsCompleted: number;
-    totalDuration: number;
-    averageDuration: number;
-    userEngagement: number;
+  progressOverTime: {
+    sessions: number;
+    sentimentTrend: 'improving' | 'steady' | 'declining' | 'mixed';
+    averageSessionLength: number; // in minutes
   };
-  emotionalTrend: Array<{
-    date: Date;
-    sentiment: {
-      positive: number;
-      neutral: number;
-      negative: number;
-    }
+  topRecommendations: string[];
+  themeEvolution?: Array<{
+    name: string;
+    evolution: Array<{
+      sessionIndex: number; // 0 = oldest, increasing = newer
+      strength: number;
+      date: string; // ISO string
+    }>;
   }>;
-  commonIssues: string[];
-  mostEffectiveRecommendations: string[];
+  lastUpdated: Date;
 }
 
 export default function AnalysisPage() {
@@ -83,7 +81,6 @@ export default function AnalysisPage() {
   const [expandedSection, setExpandedSection] = useState<string | null>('sentiment');
   const [analysisInProgress, setAnalysisInProgress] = useState(false);
   const [serverAvailable, setServerAvailable] = useState<boolean | null>(null);
-  const [showAggregateView, setShowAggregateView] = useState(false);
   const [aggregateAnalysis, setAggregateAnalysis] = useState<AggregateAnalysis | null>(null);
   const router = useRouter();
 
@@ -448,6 +445,179 @@ export default function AnalysisPage() {
     }
   };
 
+  // Function to generate aggregate analysis from all sessions
+  const generateAggregateAnalysis = useCallback((allSessions: SessionData[]): AggregateAnalysis => {
+    console.log('Generating aggregate analysis from', allSessions.length, 'sessions');
+    
+    // Only use sessions that have analysis data
+    const sessionsWithAnalysis = allSessions.filter(s => s.analysis);
+    
+    // If no sessions have analysis, return null
+    if (sessionsWithAnalysis.length === 0) {
+      return {
+        overallSentiment: { positive: 0, neutral: 0, negative: 0 },
+        commonThemes: [],
+        progressOverTime: { 
+          sessions: 0, 
+          sentimentTrend: 'steady',
+          averageSessionLength: 0 
+        },
+        topRecommendations: [],
+        lastUpdated: new Date()
+      };
+    }
+    
+    // Sort sessions by date (oldest first) for trend analysis
+    const sortedSessions = [...sessionsWithAnalysis].sort((a, b) => 
+      new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
+    );
+    
+    // Calculate overall sentiment (average of all sessions)
+    const overallSentiment = {
+      positive: parseFloat((sortedSessions.reduce((sum, s) => sum + (s.analysis?.sentiment.positive || 0), 0) / sortedSessions.length).toFixed(2)),
+      neutral: parseFloat((sortedSessions.reduce((sum, s) => sum + (s.analysis?.sentiment.neutral || 0), 0) / sortedSessions.length).toFixed(2)),
+      negative: parseFloat((sortedSessions.reduce((sum, s) => sum + (s.analysis?.sentiment.negative || 0), 0) / sortedSessions.length).toFixed(2))
+    };
+    
+    // Collect all themes from all sessions
+    const themesMap = new Map<string, { count: number, totalStrength: number }>();
+    
+    sortedSessions.forEach(session => {
+      session.analysis?.themes.forEach(theme => {
+        const existing = themesMap.get(theme.name.toLowerCase());
+        if (existing) {
+          existing.count += 1;
+          existing.totalStrength += theme.strength;
+        } else {
+          themesMap.set(theme.name.toLowerCase(), { 
+            count: 1, 
+            totalStrength: theme.strength 
+          });
+        }
+      });
+    });
+    
+    // Convert map to array and sort by frequency
+    const commonThemes = Array.from(themesMap.entries())
+      .map(([name, data]) => ({
+        name: name.charAt(0).toUpperCase() + name.slice(1), // Capitalize
+        frequency: data.count,
+        averageStrength: parseFloat((data.totalStrength / data.count).toFixed(2))
+      }))
+      .sort((a, b) => b.frequency - a.frequency || b.averageStrength - a.averageStrength)
+      .slice(0, 5); // Top 5 themes
+    
+    // Calculate sentiment trend
+    let sentimentTrend: 'improving' | 'steady' | 'declining' | 'mixed' = 'steady';
+    
+    if (sortedSessions.length > 1) {
+      // Compare first and last session positive sentiment
+      const firstPositive = sortedSessions[0].analysis?.sentiment.positive || 0;
+      const lastPositive = sortedSessions[sortedSessions.length - 1].analysis?.sentiment.positive || 0;
+      const difference = lastPositive - firstPositive;
+      
+      if (difference > 0.15) {
+        sentimentTrend = 'improving';
+      } else if (difference < -0.15) {
+        sentimentTrend = 'declining';
+      } else {
+        // Check for fluctuations in between
+        const allPositives = sortedSessions.map(s => s.analysis?.sentiment.positive || 0);
+        const maxDifference = Math.max(...allPositives) - Math.min(...allPositives);
+        
+        if (maxDifference > 0.25) {
+          sentimentTrend = 'mixed';
+        } else {
+          sentimentTrend = 'steady';
+        }
+      }
+    }
+    
+    // Calculate average session length
+    const averageSessionLength = parseFloat((sortedSessions.reduce((sum, s) => {
+      if (!s.endedAt) return sum;
+      const length = (new Date(s.endedAt).getTime() - new Date(s.startedAt).getTime()) / (1000 * 60); // in minutes
+      return sum + length;
+    }, 0) / sortedSessions.length).toFixed(1));
+    
+    // Collect all recommendations
+    const recommendationsCount = new Map<string, number>();
+    
+    sortedSessions.forEach(session => {
+      session.analysis?.recommendations?.forEach(rec => {
+        const normalizedRec = rec.toLowerCase().trim();
+        recommendationsCount.set(
+          normalizedRec, 
+          (recommendationsCount.get(normalizedRec) || 0) + 1
+        );
+      });
+    });
+    
+    // Get top recommendations
+    const topRecommendations = Array.from(recommendationsCount.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([rec]) => rec.charAt(0).toUpperCase() + rec.slice(1)); // Capitalize
+      
+    // Track theme evolution over time (only for themes that appear in multiple sessions)
+    const themeEvolution: AggregateAnalysis['themeEvolution'] = [];
+    
+    // Only analyze evolution if we have more than 1 session
+    if (sortedSessions.length > 1) {
+      // Find themes that appear in at least 2 sessions
+      const recurrentThemes = Array.from(themesMap.entries())
+        .filter(([_, data]) => data.count >= 2)
+        .map(([name]) => name.toLowerCase());
+      
+      // For each recurrent theme, track its presence and strength across sessions
+      recurrentThemes.forEach(themeName => {
+        const evolution = sortedSessions.map((session, idx) => {
+          // Find theme in this session
+          const themeInSession = session.analysis?.themes.find(
+            t => t.name.toLowerCase() === themeName
+          );
+          
+          return {
+            sessionIndex: idx,
+            strength: themeInSession?.strength || 0,
+            date: session.startedAt.toISOString().split('T')[0] // Just the date part
+          };
+        });
+        
+        // Only include themes that appear with non-zero strength in at least one session
+        if (evolution.some(e => e.strength > 0)) {
+          themeEvolution.push({
+            name: themeName.charAt(0).toUpperCase() + themeName.slice(1), // Capitalize
+            evolution
+          });
+        }
+      });
+      
+      // Sort by number of occurrences (descending)
+      themeEvolution.sort((a, b) => {
+        const aCount = a.evolution.filter(e => e.strength > 0).length;
+        const bCount = b.evolution.filter(e => e.strength > 0).length;
+        return bCount - aCount;
+      });
+      
+      // Limit to top 4 for visualization
+      themeEvolution.splice(4);
+    }
+    
+    return {
+      overallSentiment,
+      commonThemes,
+      progressOverTime: {
+        sessions: sortedSessions.length,
+        sentimentTrend,
+        averageSessionLength
+      },
+      topRecommendations,
+      themeEvolution,
+      lastUpdated: new Date()
+    };
+  }, []);
+
   // Load sessions and set up event listener for session updates
   useEffect(() => {
     // Load sessions from localStorage
@@ -549,9 +719,8 @@ export default function AnalysisPage() {
         setSessions(processedSessions);
         
         // Generate aggregate analysis from all sessions
-        if (processedSessions.length > 0) {
-          setAggregateAnalysis(generateAggregateAnalysis(processedSessions));
-        }
+        const aggregateResult = generateAggregateAnalysis(processedSessions);
+        setAggregateAnalysis(aggregateResult);
         
         // Select the most recent session by default
         if (processedSessions.length > 0) {
@@ -588,7 +757,7 @@ export default function AnalysisPage() {
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('aura_session_updated', handleSessionUpdate);
     };
-  }, [analyzeSessionWithAI, createSampleSessions]);
+  }, [analyzeSessionWithAI, createSampleSessions, generateAggregateAnalysis]);
 
   // Manually refresh analysis for the current session
   const refreshAnalysis = async () => {
@@ -692,143 +861,6 @@ export default function AnalysisPage() {
     };
   };
 
-  // Generate aggregate analysis from all sessions
-  const generateAggregateAnalysis = (sessions: SessionData[]): AggregateAnalysis => {
-    if (!sessions || sessions.length === 0) {
-      return {
-        overallSentiment: { positive: 0, neutral: 0, negative: 0 },
-        topThemes: [],
-        progressMetrics: { sessionsCompleted: 0, totalDuration: 0, averageDuration: 0, userEngagement: 0 },
-        emotionalTrend: [],
-        commonIssues: [],
-        mostEffectiveRecommendations: []
-      };
-    }
-    
-    // Compute overall sentiment as weighted average of all sessions
-    let positiveSum = 0, neutralSum = 0, negativeSum = 0;
-    let themeFrequency: Record<string, { count: number, strengthSum: number }> = {};
-    let allRecommendations: string[] = [];
-    let issuesMap: Record<string, number> = {};
-    
-    // Track sentiment over time for trend analysis
-    const emotionalTrend = sessions
-      .filter(session => session.analysis?.sentiment)
-      .map(session => ({
-        date: new Date(session.startedAt),
-        sentiment: session.analysis!.sentiment
-      }))
-      .sort((a, b) => a.date.getTime() - b.date.getTime());
-    
-    // Calculate total time spent in therapy
-    const totalDuration = sessions.reduce((total, session) => {
-      if (session.startedAt && session.endedAt) {
-        return total + (new Date(session.endedAt).getTime() - new Date(session.startedAt).getTime()) / (60 * 1000);
-      }
-      return total;
-    }, 0);
-    
-    // Calculate user engagement (ratio of user messages to total)
-    let totalUserMessages = 0;
-    let totalMessages = 0;
-    
-    sessions.forEach(session => {
-      // Add to sentiment totals
-      if (session.analysis?.sentiment) {
-        positiveSum += session.analysis.sentiment.positive;
-        neutralSum += session.analysis.sentiment.neutral;
-        negativeSum += session.analysis.sentiment.negative;
-      }
-      
-      // Count theme occurrences and total strength
-      if (session.analysis?.themes) {
-        session.analysis.themes.forEach(theme => {
-          if (!themeFrequency[theme.name]) {
-            themeFrequency[theme.name] = { count: 0, strengthSum: 0 };
-          }
-          themeFrequency[theme.name].count += 1;
-          themeFrequency[theme.name].strengthSum += theme.strength;
-        });
-      }
-      
-      // Collect all recommendations
-      if (session.analysis?.recommendations) {
-        allRecommendations = [...allRecommendations, ...session.analysis.recommendations];
-      }
-      
-      // Extract potential issues from conversations
-      session.conversation.forEach(msg => {
-        if (msg.role === 'user') {
-          totalUserMessages++;
-          
-          // Simple keyword extraction for common issues
-          const issueKeywords = [
-            'anxiety', 'stress', 'worried', 'depression', 'sad', 'tired',
-            'sleep', 'relationship', 'work', 'family', 'fear', 'angry',
-            'conflict', 'overwhelm', 'pressure', 'lonely'
-          ];
-          
-          issueKeywords.forEach(keyword => {
-            if (msg.content.toLowerCase().includes(keyword)) {
-              issuesMap[keyword] = (issuesMap[keyword] || 0) + 1;
-            }
-          });
-        }
-        totalMessages++;
-      });
-    });
-    
-    // Calculate averages
-    const sessionsCount = sessions.length;
-    const averageSentiment = {
-      positive: positiveSum / sessionsCount,
-      neutral: neutralSum / sessionsCount,
-      negative: negativeSum / sessionsCount
-    };
-    
-    // Sort themes by frequency and average strength
-    const topThemes = Object.entries(themeFrequency)
-      .map(([name, { count, strengthSum }]) => ({
-        name,
-        frequency: count / sessionsCount,
-        strength: strengthSum / count
-      }))
-      .sort((a, b) => b.frequency - a.frequency || b.strength - a.strength)
-      .slice(0, 5);
-    
-    // Find common issues
-    const commonIssues = Object.entries(issuesMap)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([issue]) => issue);
-    
-    // Count recommendation frequencies
-    const recommendationCount: Record<string, number> = {};
-    allRecommendations.forEach(rec => {
-      recommendationCount[rec] = (recommendationCount[rec] || 0) + 1;
-    });
-    
-    // Find most frequent recommendations
-    const mostEffectiveRecommendations = Object.entries(recommendationCount)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([rec]) => rec);
-    
-    return {
-      overallSentiment: averageSentiment,
-      topThemes,
-      progressMetrics: {
-        sessionsCompleted: sessionsCount,
-        totalDuration,
-        averageDuration: totalDuration / sessionsCount,
-        userEngagement: totalUserMessages / totalMessages
-      },
-      emotionalTrend,
-      commonIssues,
-      mostEffectiveRecommendations
-    };
-  };
-
   const toggleSection = (section: string) => {
     if (expandedSection === section) {
       setExpandedSection(null);
@@ -880,201 +912,314 @@ export default function AnalysisPage() {
     linkElement.click();
   };
 
-  // Define the AggregateAnalysisView component
-  const AggregateAnalysisView = ({
-    analysis,
-    sessions
-  }: {
-    analysis: AggregateAnalysis | null;
-    sessions: SessionData[];
-  }) => {
-    if (!analysis) {
-      return <div className="p-6 text-center text-gray-500">No aggregate data available</div>;
+  // Render aggregate analysis section
+  const renderAggregateAnalysis = () => {
+    if (!aggregateAnalysis || sessions.length === 0) {
+      return null;
     }
 
-    // Calculate progress since first session
-    const firstSession = [...sessions].sort((a, b) => 
-      new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
-    )[0];
-    
-    const daysSinceStart = firstSession 
-      ? Math.ceil((new Date().getTime() - new Date(firstSession.startedAt).getTime()) / (1000 * 60 * 60 * 24))
-      : 0;
+    const getTrendIcon = () => {
+      switch (aggregateAnalysis.progressOverTime.sentimentTrend) {
+        case 'improving':
+          return '↗️';
+        case 'declining':
+          return '↘️';
+        case 'mixed':
+          return '↕️';
+        default:
+          return '→';
+      }
+    };
 
-    return (
-      <div className="bg-white rounded-lg shadow">
-        <div className="p-6 border-b">
-          <div className="flex justify-between items-center">
-            <h2 className="text-2xl font-bold">Aggregate Analysis</h2>
-            <div className="text-sm text-gray-500">
-              Data from {sessions.length} sessions over {daysSinceStart} days
-            </div>
-          </div>
-        </div>
+    const getTrendDescription = () => {
+      switch (aggregateAnalysis.progressOverTime.sentimentTrend) {
+        case 'improving':
+          return 'Your emotional state is improving over time.';
+        case 'declining':
+          return 'Your emotional state has been declining recently.';
+        case 'mixed':
+          return 'Your emotional state has been fluctuating across sessions.';
+        default:
+          return 'Your emotional state has remained relatively stable.';
+      }
+    };
+    
+    // Function to refresh the comprehensive analysis
+    const refreshComprehensiveAnalysis = () => {
+      if (analysisInProgress) return;
+      
+      setAnalysisInProgress(true);
+      
+      // Regenerate analysis for all sessions
+      Promise.all(sessions.map(async (session) => {
+        const updatedAnalysis = await analyzeSessionWithAI(session);
         
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6">
-          {/* Overall Emotional State */}
-          <div className="bg-gray-50 rounded-lg p-4">
-            <h3 className="text-lg font-semibold mb-3">Overall Emotional State</h3>
-            <div className="flex items-center mb-4">
-              <div className="w-full bg-gray-200 rounded-full h-4">
-                <div className="flex h-4 rounded-full overflow-hidden">
-                  <div 
-                    className="bg-green-500" 
-                    style={{ width: `${analysis.overallSentiment.positive * 100}%` }}
-                  ></div>
-                  <div 
-                    className="bg-gray-400" 
-                    style={{ width: `${analysis.overallSentiment.neutral * 100}%` }}
-                  ></div>
-                  <div 
-                    className="bg-red-500" 
-                    style={{ width: `${analysis.overallSentiment.negative * 100}%` }}
-                  ></div>
-                </div>
-              </div>
-            </div>
-            <div className="flex justify-between text-sm">
-              <div className="flex items-center">
-                <span className="w-3 h-3 bg-green-500 rounded-full mr-1"></span>
-                <span>Positive: {(analysis.overallSentiment.positive * 100).toFixed(1)}%</span>
-              </div>
-              <div className="flex items-center">
-                <span className="w-3 h-3 bg-gray-400 rounded-full mr-1"></span>
-                <span>Neutral: {(analysis.overallSentiment.neutral * 100).toFixed(1)}%</span>
-              </div>
-              <div className="flex items-center">
-                <span className="w-3 h-3 bg-red-500 rounded-full mr-1"></span>
-                <span>Negative: {(analysis.overallSentiment.negative * 100).toFixed(1)}%</span>
-              </div>
-            </div>
-          </div>
-          
-          {/* Top Themes */}
-          <div className="bg-gray-50 rounded-lg p-4">
-            <h3 className="text-lg font-semibold mb-3">Recurring Themes</h3>
-            {analysis.topThemes.length > 0 ? (
-              <div className="space-y-3">
-                {analysis.topThemes.map((theme, i) => (
-                  <div key={i} className="flex flex-col">
-                    <div className="flex justify-between text-sm mb-1">
-                      <span>{theme.name}</span>
-                      <span>{(theme.frequency * 100).toFixed(0)}% of sessions</span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2">
-                      <div 
-                        className="bg-blue-500 rounded-full h-2" 
-                        style={{ width: `${theme.strength * 100}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-gray-500 text-sm">No recurring themes identified yet</p>
-            )}
-          </div>
-          
-          {/* Progress Metrics */}
-          <div className="bg-gray-50 rounded-lg p-4">
-            <h3 className="text-lg font-semibold mb-3">Therapy Progress</h3>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="bg-white rounded p-3 shadow-sm">
-                <div className="text-3xl font-bold text-blue-600">
-                  {analysis.progressMetrics.sessionsCompleted}
-                </div>
-                <div className="text-xs text-gray-500">Sessions Completed</div>
-              </div>
-              <div className="bg-white rounded p-3 shadow-sm">
-                <div className="text-3xl font-bold text-blue-600">
-                  {Math.round(analysis.progressMetrics.totalDuration)}
-                </div>
-                <div className="text-xs text-gray-500">Total Minutes</div>
-              </div>
-              <div className="bg-white rounded p-3 shadow-sm">
-                <div className="text-3xl font-bold text-blue-600">
-                  {Math.round(analysis.progressMetrics.averageDuration)}
-                </div>
-                <div className="text-xs text-gray-500">Avg. Session (Min)</div>
-              </div>
-              <div className="bg-white rounded p-3 shadow-sm">
-                <div className="text-3xl font-bold text-blue-600">
-                  {(analysis.progressMetrics.userEngagement * 100).toFixed(0)}%
-                </div>
-                <div className="text-xs text-gray-500">Engagement Rate</div>
-              </div>
-            </div>
-          </div>
-          
-          {/* Common Issues */}
-          <div className="bg-gray-50 rounded-lg p-4">
-            <h3 className="text-lg font-semibold mb-3">Common Discussion Topics</h3>
-            {analysis.commonIssues.length > 0 ? (
-              <div className="space-y-2">
-                {analysis.commonIssues.map((issue, i) => (
-                  <div key={i} className="bg-white px-3 py-2 rounded shadow-sm">
-                    <span className="capitalize">{issue}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-gray-500 text-sm">No common issues identified yet</p>
-            )}
-          </div>
-        </div>
+        // Update in localStorage
+        const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
+        if (allSessions[session.id]) {
+          allSessions[session.id].analysis = updatedAnalysis;
+          localStorage.setItem('aura_sessions', JSON.stringify(allSessions));
+        }
         
-        {/* Recommendations */}
-        <div className="p-6 border-t">
-          <h3 className="text-lg font-semibold mb-3">Top Recommendations</h3>
-          {analysis.mostEffectiveRecommendations.length > 0 ? (
-            <div className="space-y-3">
-              {analysis.mostEffectiveRecommendations.map((rec, i) => (
-                <div key={i} className="flex items-start">
-                  <div className="bg-blue-100 text-blue-800 rounded-full w-6 h-6 flex items-center justify-center mr-2 mt-0.5">
-                    {i + 1}
-                  </div>
-                  <p>{rec}</p>
+        return {
+          ...session,
+          analysis: updatedAnalysis
+        };
+      }))
+      .then((updatedSessions) => {
+        setSessions(updatedSessions);
+        const newAggregate = generateAggregateAnalysis(updatedSessions);
+        setAggregateAnalysis(newAggregate);
+        
+        // If a session is selected, update it too
+        if (selectedSession) {
+          const updatedSelected = updatedSessions.find(s => s.id === selectedSession.id);
+          if (updatedSelected) {
+            setSelectedSession(updatedSelected);
+          }
+        }
+        
+        // Dispatch event to notify other components
+        window.dispatchEvent(new Event('aura_session_updated'));
+      })
+      .catch((err) => {
+        console.error("Error refreshing comprehensive analysis:", err);
+      })
+      .finally(() => {
+        setAnalysisInProgress(false);
+      });
+    };
+    
+    // Generate a simple theme evolution chart
+    const renderThemeEvolution = () => {
+      if (!aggregateAnalysis.themeEvolution || aggregateAnalysis.themeEvolution.length === 0) {
+        return (
+          <div className="text-center py-6 text-gray-500">
+            <p>Not enough sessions to track theme evolution</p>
+            <p className="text-xs mt-1">Complete more sessions to see how themes change over time</p>
+          </div>
+        );
+      }
+      
+      // Determine how many sessions we're tracking
+      const sessionCount = Math.max(
+        ...aggregateAnalysis.themeEvolution.flatMap(t => 
+          t.evolution.map(e => e.sessionIndex)
+        )
+      ) + 1;
+      
+      // Generate colors for themes
+      const themeColors = [
+        'bg-blue-500', 'bg-purple-500', 'bg-green-500', 'bg-orange-500',
+        'bg-red-500', 'bg-indigo-500', 'bg-yellow-500', 'bg-pink-500'
+      ];
+      
+      return (
+        <div className="mt-6">
+          <div className="flex justify-between mb-2">
+            <h3 className="font-medium text-gray-900">Theme Evolution</h3>
+            <div className="text-xs text-gray-500">Tracking across {sessionCount} sessions</div>
+          </div>
+          
+          <div className="theme-evolution-chart">
+            {/* Legend */}
+            <div className="flex flex-wrap mb-3 gap-2">
+              {aggregateAnalysis.themeEvolution.map((theme, idx) => (
+                <div key={idx} className="flex items-center text-xs">
+                  <span className={`w-3 h-3 rounded-full mr-1 ${themeColors[idx % themeColors.length]}`}></span>
+                  <span>{theme.name}</span>
                 </div>
               ))}
             </div>
-          ) : (
-            <p className="text-gray-500">No recommendations available yet</p>
-          )}
-        </div>
-        
-        {/* Timeline of Progress */}
-        <div className="p-6 border-t">
-          <h3 className="text-lg font-semibold mb-3">Emotional Trend Over Time</h3>
-          {analysis.emotionalTrend.length > 1 ? (
-            <div className="h-60 w-full">
-              {/* Simplified trend visualization */}
-              <div className="h-full flex items-end">
-                {analysis.emotionalTrend.map((point, i) => (
-                  <div key={i} className="flex-1 flex flex-col items-center">
-                    <div className="w-full flex flex-col-reverse h-48">
-                      <div 
-                        className="w-full bg-green-500" 
-                        style={{ height: `${point.sentiment.positive * 100}%` }}
-                      ></div>
-                      <div 
-                        className="w-full bg-gray-400" 
-                        style={{ height: `${point.sentiment.neutral * 100}%` }}
-                      ></div>
-                      <div 
-                        className="w-full bg-red-500" 
-                        style={{ height: `${point.sentiment.negative * 100}%` }}
-                      ></div>
+            
+            {/* Chart */}
+            <div className="relative h-40 bg-gray-50 rounded-lg p-2 border border-gray-100">
+              {/* Session markers on x-axis */}
+              <div className="absolute bottom-0 left-0 right-0 flex justify-between px-2 text-xs text-gray-500">
+                {Array.from({length: sessionCount}).map((_, idx) => {
+                  const sessionDate = aggregateAnalysis.themeEvolution?.[0]?.evolution[idx]?.date;
+                  return (
+                    <div key={idx} className="flex flex-col items-center">
+                      <div>S{idx+1}</div>
+                      {sessionDate && <div className="text-[0.65rem]">{sessionDate}</div>}
                     </div>
-                    <div className="text-xs text-gray-500 mt-1">
-                      {new Date(point.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
+              </div>
+              
+              {/* Strength lines */}
+              <div className="absolute top-0 left-0 right-0 bottom-6 flex">
+                {aggregateAnalysis.themeEvolution.map((theme, themeIdx) => {
+                  // Filter out zero-strength points
+                  const points = theme.evolution
+                    .filter(e => e.strength > 0)
+                    .map(e => ({
+                      x: (e.sessionIndex / (sessionCount - 1)) * 100,
+                      y: 100 - (e.strength * 100),
+                      strength: e.strength
+                    }));
+                  
+                  if (points.length < 2) return null;
+                  
+                  // Create SVG path
+                  let path = `M ${points[0].x} ${points[0].y}`;
+                  for (let i = 1; i < points.length; i++) {
+                    path += ` L ${points[i].x} ${points[i].y}`;
+                  }
+                  
+                  return (
+                    <svg key={themeIdx} className="absolute inset-0 w-full h-full overflow-visible">
+                      <path
+                        d={path}
+                        fill="none"
+                        stroke={themeColors[themeIdx % themeColors.length].replace('bg-', 'stroke-')}
+                        strokeWidth="2"
+                        className="opacity-80"
+                      />
+                      
+                      {/* Data points */}
+                      {points.map((point, pointIdx) => (
+                        <circle
+                          key={pointIdx}
+                          cx={`${point.x}%`}
+                          cy={`${point.y}%`}
+                          r="3"
+                          className={`${themeColors[themeIdx % themeColors.length].replace('bg-', 'fill-')} stroke-white`}
+                          strokeWidth="1"
+                          data-strength={point.strength.toFixed(2)}
+                        />
+                      ))}
+                    </svg>
+                  );
+                })}
               </div>
             </div>
-          ) : (
-            <p className="text-gray-500 text-sm">Need more sessions to show trend</p>
-          )}
+          </div>
+        </div>
+      );
+    };
+
+    return (
+      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg shadow-sm p-6 mb-6 border border-blue-100">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-bold flex items-center text-indigo-900">
+            <BarChart2 className="mr-2 w-5 h-5" /> 
+            Comprehensive Analysis
+          </h2>
+          
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-gray-500">
+              Updated: {new Date(aggregateAnalysis.lastUpdated).toLocaleString()}
+            </span>
+            <button 
+              onClick={refreshComprehensiveAnalysis}
+              disabled={analysisInProgress}
+              className={`flex items-center text-sm px-3 py-1.5 rounded-full
+                ${analysisInProgress 
+                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
+                  : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200'}`}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 mr-1 ${analysisInProgress ? 'animate-spin' : ''}`} />
+              {analysisInProgress ? 'Updating...' : 'Refresh All'}
+            </button>
+          </div>
+        </div>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div className="bg-white p-4 rounded-lg shadow-sm">
+            <h3 className="font-medium text-gray-900 mb-2">Overall Sentiment</h3>
+            <div className="flex justify-between mb-2">
+              <div className="text-green-600">
+                Positive: {Math.round(aggregateAnalysis.overallSentiment.positive * 100)}%
+              </div>
+              <div className="text-blue-500">
+                Neutral: {Math.round(aggregateAnalysis.overallSentiment.neutral * 100)}%
+              </div>
+              <div className="text-red-500">
+                Negative: {Math.round(aggregateAnalysis.overallSentiment.negative * 100)}%
+              </div>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-2.5">
+              <div className="bg-green-500 h-2.5 rounded-l-full" style={{ 
+                width: `${aggregateAnalysis.overallSentiment.positive * 100}%`,
+                display: 'inline-block'
+              }}></div>
+              <div className="bg-blue-500 h-2.5" style={{ 
+                width: `${aggregateAnalysis.overallSentiment.neutral * 100}%`,
+                display: 'inline-block'
+              }}></div>
+              <div className="bg-red-500 h-2.5 rounded-r-full" style={{ 
+                width: `${aggregateAnalysis.overallSentiment.negative * 100}%`,
+                display: 'inline-block'
+              }}></div>
+            </div>
+          </div>
+          
+          <div className="bg-white p-4 rounded-lg shadow-sm">
+            <h3 className="font-medium text-gray-900 mb-2">Progress Over Time</h3>
+            <div className="text-sm mb-1">
+              <span className="font-medium">{sessions.length}</span> sessions analyzed
+            </div>
+            <div className="text-sm mb-1">
+              <span className="font-medium">{aggregateAnalysis.progressOverTime.averageSessionLength}</span> min average session length
+            </div>
+            <div className="flex items-center mt-3 text-sm font-medium">
+              <span className="text-lg mr-2 bg-indigo-100 p-1 rounded-full">{getTrendIcon()}</span>
+              {getTrendDescription()}
+            </div>
+          </div>
+        </div>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div className="bg-white p-4 rounded-lg shadow-sm">
+            <h3 className="font-medium text-gray-900 mb-2">Common Themes</h3>
+            {aggregateAnalysis.commonThemes.length > 0 ? (
+              <ul className="space-y-2.5">
+                {aggregateAnalysis.commonThemes.map((theme, index) => (
+                  <li key={index} className="flex justify-between items-center">
+                    <span>{theme.name}</span>
+                    <div className="text-xs text-gray-500 flex items-center">
+                      <span className="bg-indigo-100 text-indigo-800 px-2 py-1 rounded-full mr-2">
+                        {theme.frequency} sessions
+                      </span>
+                      <span className="w-16 bg-gray-200 rounded-full h-1.5">
+                        <span 
+                          className="bg-indigo-600 h-1.5 rounded-full" 
+                          style={{ width: `${theme.averageStrength * 100}%` }}
+                        ></span>
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-gray-500">No common themes identified yet.</p>
+            )}
+          </div>
+          
+          <div className="bg-white p-4 rounded-lg shadow-sm">
+            <h3 className="font-medium text-gray-900 mb-2">Top Recommendations</h3>
+            {aggregateAnalysis.topRecommendations.length > 0 ? (
+              <ul className="space-y-2">
+                {aggregateAnalysis.topRecommendations.map((rec, index) => (
+                  <li key={index} className="text-sm bg-gray-50 p-2.5 rounded border border-gray-200">
+                    {rec}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-gray-500">No recommendations collected yet.</p>
+            )}
+          </div>
+        </div>
+        
+        <div className="bg-white p-4 rounded-lg shadow-sm">
+          {renderThemeEvolution()}
+        </div>
+        
+        <div className="mt-4 text-sm text-indigo-800 bg-indigo-50 p-3 rounded-lg">
+          <p className="font-medium">This analysis is continuously updated as you complete more therapy sessions.</p>
+          <p className="mt-1">It combines data from all your sessions to provide insights into your overall progress and recurring themes.</p>
         </div>
       </div>
     );
@@ -1135,346 +1280,269 @@ export default function AnalysisPage() {
         <BarChart2 className="mr-2" /> Voice Session Analysis
       </h1>
       
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
-        {/* Session list sidebar */}
-        <div className="md:col-span-3 bg-white rounded-lg shadow p-4">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-semibold">Sessions</h2>
-            <button 
-              className={`px-3 py-1 rounded text-sm ${showAggregateView ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-              onClick={() => setShowAggregateView(!showAggregateView)}
-            >
-              {showAggregateView ? 'All Sessions View' : 'Single Session View'}
-            </button>
-          </div>
-          
-          {isLoading ? (
-            <p className="text-gray-500">Loading sessions...</p>
-          ) : error ? (
-            <p className="text-red-500">{error}</p>
-          ) : sessions.length === 0 ? (
-            <p className="text-gray-500">No sessions found.</p>
-          ) : (
-            <div className="space-y-3 max-h-[60vh] overflow-y-auto">
-              {sessions.map((session) => (
-                <div
-                  key={session.id}
-                  className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                    !showAggregateView && selectedSession?.id === session.id
-                      ? 'bg-blue-100 border-l-4 border-blue-500'
-                      : 'bg-gray-50 hover:bg-gray-100'
-                  }`}
-                  onClick={() => {
-                    setSelectedSession(session);
-                    setShowAggregateView(false);
-                  }}
-                >
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <p className="font-medium">
-                        {formatDate(session.startedAt)}
-                      </p>
-                      <p className="text-sm text-gray-500 flex items-center mt-1">
-                        <Clock className="w-3 h-3 mr-1" />
-                        {session.endedAt
-                          ? `${Math.round(
-                              (new Date(session.endedAt).getTime() -
-                                new Date(session.startedAt).getTime()) /
-                                (1000 * 60)
-                            )} mins`
-                          : 'Ongoing'}
-                      </p>
-                    </div>
-                    <div className="flex flex-col items-end">
-                      <div className="flex space-x-1">
-                        <span
-                          className="w-3 h-3 rounded-full"
-                          style={{
-                            backgroundColor: `rgba(0, 128, 0, ${
-                              session.analysis?.sentiment.positive || 0.1
-                            })`,
-                          }}
-                        ></span>
-                        <span
-                          className="w-3 h-3 rounded-full"
-                          style={{
-                            backgroundColor: `rgba(200, 200, 200, ${
-                              session.analysis?.sentiment.neutral || 0.1
-                            })`,
-                          }}
-                        ></span>
-                        <span
-                          className="w-3 h-3 rounded-full"
-                          style={{
-                            backgroundColor: `rgba(255, 0, 0, ${
-                              session.analysis?.sentiment.negative || 0.1
-                            })`,
-                          }}
-                        ></span>
-                      </div>
-                      <p className="text-xs text-gray-500 mt-1">
-                        {session.conversation.length} messages
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+      {renderAggregateAnalysis()}
+      
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        {/* Session Selector */}
+        <div className="mb-8">
+          <label htmlFor="session-select" className="block text-sm font-medium mb-2">
+            Select Session
+          </label>
+          <select
+            id="session-select"
+            className="w-full md:w-1/2 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            value={selectedSession?.id || ''}
+            onChange={(e) => {
+              const session = sessions.find(s => s.id === e.target.value);
+              if (session) setSelectedSession(session);
+            }}
+          >
+            {sessions.map((session) => (
+              <option key={session.id} value={session.id}>
+                {formatDate(session.startedAt)} ({session.conversation.length} messages)
+              </option>
+            ))}
+          </select>
         </div>
-
-        {/* Analysis Content */}
-        <div className="md:col-span-9">
-          {isLoading ? (
-            <div className="bg-white rounded-lg shadow p-6 text-center">
-              <div className="animate-pulse flex flex-col items-center">
-                <div className="h-12 w-12 mb-4 rounded-full bg-gray-200"></div>
-                <div className="h-4 w-3/4 mb-2 rounded bg-gray-200"></div>
-                <div className="h-4 w-1/2 rounded bg-gray-200"></div>
-                <p className="mt-4 text-gray-500">Loading analysis...</p>
+        
+        {selectedSession && selectedSession.analysis && (
+          <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-semibold">
+                Session on {formatDate(selectedSession.startedAt)}
+              </h2>
+              <div className="flex space-x-2">
+                <button
+                  onClick={refreshAnalysis}
+                  disabled={analysisInProgress}
+                  className={`flex items-center px-3 py-1 ${analysisInProgress ? 'bg-gray-200 cursor-not-allowed' : 'bg-gray-100 hover:bg-gray-200'} rounded-md text-sm`}
+                >
+                  <RefreshCw size={16} className={`mr-1 ${analysisInProgress ? 'animate-spin' : ''}`} /> 
+                  Reanalyze
+                </button>
+                <button
+                  onClick={exportAnalysis}
+                  className="flex items-center px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-md text-sm"
+                >
+                  <Download size={16} className="mr-1" /> Export
+                </button>
               </div>
             </div>
-          ) : showAggregateView ? (
-            <AggregateAnalysisView analysis={aggregateAnalysis} sessions={sessions} />
-          ) : selectedSession ? (
-            <div className="bg-white rounded-lg shadow">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl font-semibold">
-                  Session on {formatDate(selectedSession.startedAt)}
-                </h2>
-                <div className="flex space-x-2">
-                  <button
-                    onClick={refreshAnalysis}
-                    disabled={analysisInProgress}
-                    className={`flex items-center px-3 py-1 ${analysisInProgress ? 'bg-gray-200 cursor-not-allowed' : 'bg-gray-100 hover:bg-gray-200'} rounded-md text-sm`}
-                  >
-                    <RefreshCw size={16} className={`mr-1 ${analysisInProgress ? 'animate-spin' : ''}`} /> 
-                    Reanalyze
-                  </button>
-                  <button
-                    onClick={exportAnalysis}
-                    className="flex items-center px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-md text-sm"
-                  >
-                    <Download size={16} className="mr-1" /> Export
-                  </button>
-                </div>
+            
+            {/* Analysis Last Updated */}
+            {selectedSession.analysis.lastUpdated && (
+              <div className="text-xs text-gray-500 mb-3">
+                Analysis last updated: {formatDate(selectedSession.analysis.lastUpdated)}
+              </div>
+            )}
+            
+            {/* Session Duration */}
+            <div className="flex items-center mb-6 text-gray-600">
+              <Clock size={18} className="mr-2" />
+              <span>
+                Duration: {
+                  selectedSession.endedAt 
+                    ? formatDuration((new Date(selectedSession.endedAt).getTime() - new Date(selectedSession.startedAt).getTime()) / 1000)
+                    : 'In progress'
+                }
+              </span>
+              <span className="mx-4">|</span>
+              <MessageCircle size={18} className="mr-2" />
+              <span>{selectedSession.conversation.length} messages exchanged</span>
+            </div>
+            
+            {/* Sentiment Analysis */}
+            <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
+              <div 
+                className="flex justify-between items-center p-4 bg-gray-50 cursor-pointer"
+                onClick={() => toggleSection('sentiment')}
+              >
+                <h3 className="font-medium">Sentiment Analysis</h3>
+                {expandedSection === 'sentiment' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
               </div>
               
-              {/* Analysis Last Updated */}
-              {selectedSession.analysis.lastUpdated && (
-                <div className="text-xs text-gray-500 mb-3">
-                  Analysis last updated: {formatDate(selectedSession.analysis.lastUpdated)}
+              {expandedSection === 'sentiment' && (
+                <div className="p-4">
+                  <div className="flex flex-col sm:flex-row justify-between mb-4">
+                    <div className="mb-4 sm:mb-0 sm:mr-4 flex-1">
+                      <h4 className="text-sm font-medium mb-2">Emotional Tone</h4>
+                      <div className="h-6 bg-gray-200 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full flex"
+                          style={{ 
+                            width: '100%',
+                          }}
+                        >
+                          <div 
+                            style={{ 
+                              width: `${selectedSession.analysis.sentiment.positive * 100}%`,
+                              backgroundColor: getSentimentColor(selectedSession.analysis.sentiment.positive, 'positive')
+                            }} 
+                            className="h-full"
+                          ></div>
+                          <div 
+                            style={{ 
+                              width: `${selectedSession.analysis.sentiment.neutral * 100}%`,
+                              backgroundColor: getSentimentColor(selectedSession.analysis.sentiment.neutral, 'neutral')
+                            }} 
+                            className="h-full"
+                          ></div>
+                          <div 
+                            style={{ 
+                              width: `${selectedSession.analysis.sentiment.negative * 100}%`,
+                              backgroundColor: getSentimentColor(selectedSession.analysis.sentiment.negative, 'negative')
+                            }} 
+                            className="h-full"
+                          ></div>
+                        </div>
+                      </div>
+                      <div className="flex justify-between mt-2 text-xs text-gray-500">
+                        <span>Positive: {Math.round(selectedSession.analysis.sentiment.positive * 100)}%</span>
+                        <span>Neutral: {Math.round(selectedSession.analysis.sentiment.neutral * 100)}%</span>
+                        <span>Negative: {Math.round(selectedSession.analysis.sentiment.negative * 100)}%</span>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-sm text-gray-600 mt-4">
+                    This analysis represents the emotional tone detected throughout your conversation.
+                    {selectedSession.analysis.sentiment.positive > 0.5 
+                      ? ' Your session had a predominantly positive tone.' 
+                      : selectedSession.analysis.sentiment.negative > 0.3 
+                        ? ' Your session had significant negative emotional content, which is normal when discussing challenges.'
+                        : ' Your session had a balanced emotional tone.'}
+                  </p>
                 </div>
               )}
-              
-              {/* Session Duration */}
-              <div className="flex items-center mb-6 text-gray-600">
-                <Clock size={18} className="mr-2" />
-                <span>
-                  Duration: {
-                    selectedSession.endedAt 
-                      ? formatDuration((new Date(selectedSession.endedAt).getTime() - new Date(selectedSession.startedAt).getTime()) / 1000)
-                      : 'In progress'
-                  }
-                </span>
-                <span className="mx-4">|</span>
-                <MessageCircle size={18} className="mr-2" />
-                <span>{selectedSession.conversation.length} messages exchanged</span>
+            </div>
+            
+            {/* Themes */}
+            <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
+              <div 
+                className="flex justify-between items-center p-4 bg-gray-50 cursor-pointer"
+                onClick={() => toggleSection('themes')}
+              >
+                <h3 className="font-medium">Key Themes</h3>
+                {expandedSection === 'themes' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
               </div>
               
-              {/* Sentiment Analysis */}
-              <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
-                <div 
-                  className="flex justify-between items-center p-4 bg-gray-50 cursor-pointer"
-                  onClick={() => toggleSection('sentiment')}
-                >
-                  <h3 className="font-medium">Sentiment Analysis</h3>
-                  {expandedSection === 'sentiment' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-                </div>
-                
-                {expandedSection === 'sentiment' && (
-                  <div className="p-4">
-                    <div className="flex flex-col sm:flex-row justify-between mb-4">
-                      <div className="mb-4 sm:mb-0 sm:mr-4 flex-1">
-                        <h4 className="text-sm font-medium mb-2">Emotional Tone</h4>
-                        <div className="h-6 bg-gray-200 rounded-full overflow-hidden">
-                          <div 
-                            className="h-full flex"
-                            style={{ 
-                              width: '100%',
-                            }}
-                          >
-                            <div 
-                              style={{ 
-                                width: `${selectedSession.analysis.sentiment.positive * 100}%`,
-                                backgroundColor: getSentimentColor(selectedSession.analysis.sentiment.positive, 'positive')
-                              }} 
-                              className="h-full"
-                            ></div>
-                            <div 
-                              style={{ 
-                                width: `${selectedSession.analysis.sentiment.neutral * 100}%`,
-                                backgroundColor: getSentimentColor(selectedSession.analysis.sentiment.neutral, 'neutral')
-                              }} 
-                              className="h-full"
-                            ></div>
-                            <div 
-                              style={{ 
-                                width: `${selectedSession.analysis.sentiment.negative * 100}%`,
-                                backgroundColor: getSentimentColor(selectedSession.analysis.sentiment.negative, 'negative')
-                              }} 
-                              className="h-full"
-                            ></div>
-                          </div>
-                        </div>
-                        <div className="flex justify-between mt-2 text-xs text-gray-500">
-                          <span>Positive: {Math.round(selectedSession.analysis.sentiment.positive * 100)}%</span>
-                          <span>Neutral: {Math.round(selectedSession.analysis.sentiment.neutral * 100)}%</span>
-                          <span>Negative: {Math.round(selectedSession.analysis.sentiment.negative * 100)}%</span>
-                        </div>
-                      </div>
-                    </div>
-                    <p className="text-sm text-gray-600 mt-4">
-                      This analysis represents the emotional tone detected throughout your conversation.
-                      {selectedSession.analysis.sentiment.positive > 0.5 
-                        ? ' Your session had a predominantly positive tone.' 
-                        : selectedSession.analysis.sentiment.negative > 0.3 
-                          ? ' Your session had significant negative emotional content, which is normal when discussing challenges.'
-                          : ' Your session had a balanced emotional tone.'}
-                    </p>
-                  </div>
-                )}
-              </div>
-              
-              {/* Themes */}
-              <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
-                <div 
-                  className="flex justify-between items-center p-4 bg-gray-50 cursor-pointer"
-                  onClick={() => toggleSection('themes')}
-                >
-                  <h3 className="font-medium">Key Themes</h3>
-                  {expandedSection === 'themes' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-                </div>
-                
-                {expandedSection === 'themes' && (
-                  <div className="p-4">
-                    <div className="space-y-4">
-                      {selectedSession.analysis.themes.map((theme, index) => (
-                        <div key={index}>
-                          <div className="flex justify-between mb-1">
-                            <span className="text-sm font-medium">{theme.name}</span>
-                            <span className="text-sm text-gray-500">{Math.round(theme.strength * 100)}%</span>
-                          </div>
-                          <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-                            <div 
-                              className="h-full bg-blue-500"
-                              style={{ width: `${theme.strength * 100}%` }}
-                            ></div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    <p className="text-sm text-gray-600 mt-4">
-                      These themes represent the main topics discussed during your therapy session, 
-                      with percentages indicating their prominence in the conversation.
-                    </p>
-                  </div>
-                )}
-              </div>
-              
-              {/* Speaking Time */}
-              <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
-                <div 
-                  className="flex justify-between items-center p-4 bg-gray-50 cursor-pointer"
-                  onClick={() => toggleSection('speaking')}
-                >
-                  <h3 className="font-medium">Speaking Time</h3>
-                  {expandedSection === 'speaking' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-                </div>
-                
-                {expandedSection === 'speaking' && (
-                  <div className="p-4">
-                    <div className="space-y-4">
-                      <div>
+              {expandedSection === 'themes' && (
+                <div className="p-4">
+                  <div className="space-y-4">
+                    {selectedSession.analysis.themes.map((theme, index) => (
+                      <div key={index}>
                         <div className="flex justify-between mb-1">
-                          <span className="text-sm font-medium">You</span>
-                          <span className="text-sm text-gray-500">
-                            {formatDuration(selectedSession.analysis.speakingTime.user)}
-                          </span>
+                          <span className="text-sm font-medium">{theme.name}</span>
+                          <span className="text-sm text-gray-500">{Math.round(theme.strength * 100)}%</span>
                         </div>
-                        <div className="h-4 bg-gray-200 rounded-full overflow-hidden">
-                          <div 
-                            className="h-full bg-green-500"
-                            style={{ 
-                              width: `${(selectedSession.analysis.speakingTime.user / 
-                                (selectedSession.analysis.speakingTime.user + selectedSession.analysis.speakingTime.assistant)) * 100}%` 
-                            }}
-                          ></div>
-                        </div>
-                      </div>
-                      <div>
-                        <div className="flex justify-between mb-1">
-                          <span className="text-sm font-medium">Aura AI</span>
-                          <span className="text-sm text-gray-500">
-                            {formatDuration(selectedSession.analysis.speakingTime.assistant)}
-                          </span>
-                        </div>
-                        <div className="h-4 bg-gray-200 rounded-full overflow-hidden">
+                        <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
                           <div 
                             className="h-full bg-blue-500"
-                            style={{ 
-                              width: `${(selectedSession.analysis.speakingTime.assistant / 
-                                (selectedSession.analysis.speakingTime.user + selectedSession.analysis.speakingTime.assistant)) * 100}%` 
-                            }}
+                            style={{ width: `${theme.strength * 100}%` }}
                           ></div>
                         </div>
                       </div>
-                    </div>
-                    <p className="text-sm text-gray-600 mt-4">
-                      This shows the estimated speaking time distribution during your conversation.
-                      {selectedSession.analysis.speakingTime.user > selectedSession.analysis.speakingTime.assistant
-                        ? ' You did most of the talking, which is ideal for a therapeutic conversation.'
-                        : ' The conversation had a balanced speaking distribution.'}
-                    </p>
+                    ))}
                   </div>
-                )}
-              </div>
-              
-              {/* Recommendations */}
-              <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
-                <div 
-                  className="flex justify-between items-center p-4 bg-gray-50 cursor-pointer"
-                  onClick={() => toggleSection('recommendations')}
-                >
-                  <h3 className="font-medium">Recommendations</h3>
-                  {expandedSection === 'recommendations' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+                  <p className="text-sm text-gray-600 mt-4">
+                    These themes represent the main topics discussed during your therapy session, 
+                    with percentages indicating their prominence in the conversation.
+                  </p>
                 </div>
-                
-                {expandedSection === 'recommendations' && (
-                  <div className="p-4">
-                    <ul className="list-disc pl-5 space-y-2">
-                      {selectedSession.analysis.recommendations?.map((rec, index) => (
-                        <li key={index} className="text-gray-700">{rec}</li>
-                      ))}
-                    </ul>
-                    <p className="text-sm text-gray-600 mt-4">
-                      These personalized recommendations are based on the themes and content of your conversation.
-                      Consider implementing them to support your mental wellness goals.
-                    </p>
-                  </div>
-                )}
+              )}
+            </div>
+            
+            {/* Speaking Time */}
+            <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
+              <div 
+                className="flex justify-between items-center p-4 bg-gray-50 cursor-pointer"
+                onClick={() => toggleSection('speaking')}
+              >
+                <h3 className="font-medium">Speaking Time</h3>
+                {expandedSection === 'speaking' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
               </div>
               
-              {/* Note about data privacy */}
-              <div className="mt-8 text-xs text-gray-500 border-t pt-4">
-                <p>
-                  Note: The analysis uses AI to process your conversation and generate insights.
-                  All processing is secure and your data is only used to provide this analysis.
-                </p>
-              </div>
+              {expandedSection === 'speaking' && (
+                <div className="p-4">
+                  <div className="space-y-4">
+                    <div>
+                      <div className="flex justify-between mb-1">
+                        <span className="text-sm font-medium">You</span>
+                        <span className="text-sm text-gray-500">
+                          {formatDuration(selectedSession.analysis.speakingTime.user)}
+                        </span>
+                      </div>
+                      <div className="h-4 bg-gray-200 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-green-500"
+                          style={{ 
+                            width: `${(selectedSession.analysis.speakingTime.user / 
+                              (selectedSession.analysis.speakingTime.user + selectedSession.analysis.speakingTime.assistant)) * 100}%` 
+                          }}
+                        ></div>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex justify-between mb-1">
+                        <span className="text-sm font-medium">Aura AI</span>
+                        <span className="text-sm text-gray-500">
+                          {formatDuration(selectedSession.analysis.speakingTime.assistant)}
+                        </span>
+                      </div>
+                      <div className="h-4 bg-gray-200 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-blue-500"
+                          style={{ 
+                            width: `${(selectedSession.analysis.speakingTime.assistant / 
+                              (selectedSession.analysis.speakingTime.user + selectedSession.analysis.speakingTime.assistant)) * 100}%` 
+                          }}
+                        ></div>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-sm text-gray-600 mt-4">
+                    This shows the estimated speaking time distribution during your conversation.
+                    {selectedSession.analysis.speakingTime.user > selectedSession.analysis.speakingTime.assistant
+                      ? ' You did most of the talking, which is ideal for a therapeutic conversation.'
+                      : ' The conversation had a balanced speaking distribution.'}
+                  </p>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+            
+            {/* Recommendations */}
+            <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
+              <div 
+                className="flex justify-between items-center p-4 bg-gray-50 cursor-pointer"
+                onClick={() => toggleSection('recommendations')}
+              >
+                <h3 className="font-medium">Recommendations</h3>
+                {expandedSection === 'recommendations' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+              </div>
+              
+              {expandedSection === 'recommendations' && (
+                <div className="p-4">
+                  <ul className="list-disc pl-5 space-y-2">
+                    {selectedSession.analysis.recommendations?.map((rec, index) => (
+                      <li key={index} className="text-gray-700">{rec}</li>
+                    ))}
+                  </ul>
+                  <p className="text-sm text-gray-600 mt-4">
+                    These personalized recommendations are based on the themes and content of your conversation.
+                    Consider implementing them to support your mental wellness goals.
+                  </p>
+                </div>
+              )}
+            </div>
+            
+            {/* Note about data privacy */}
+            <div className="mt-8 text-xs text-gray-500 border-t pt-4">
+              <p>
+                Note: The analysis uses AI to process your conversation and generate insights.
+                All processing is secure and your data is only used to provide this analysis.
+              </p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
