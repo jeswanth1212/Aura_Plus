@@ -165,8 +165,17 @@ export default function AnalysisPage() {
       }
     ];
 
-    // Save to localStorage
-    localStorage.setItem('aura_sessions', JSON.stringify(sampleSessions));
+    // Save to localStorage in the correct format (as an object with IDs as keys)
+    const sessionsObject: {[key: string]: SessionData} = {};
+    sampleSessions.forEach(session => {
+      sessionsObject[session.id] = session;
+    });
+    
+    localStorage.setItem('aura_sessions', JSON.stringify(sessionsObject));
+    
+    // Also create the user sessions list
+    localStorage.setItem(`aura_user_sessions_${userId}`, JSON.stringify(sampleSessions.map(s => s.id)));
+    
     return sampleSessions;
   }, []);
 
@@ -290,16 +299,72 @@ export default function AnalysisPage() {
       try {
         const userId = localStorage.getItem('aura_user_id');
         
-        // Get all sessions for the user
-        let storedSessions = JSON.parse(localStorage.getItem('aura_sessions') || '[]');
-        let userSessions = storedSessions.filter((s: any) => s.userId === userId);
+        // Get all sessions from localStorage
+        let sessionsObj = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
+        const userSessionIds = JSON.parse(localStorage.getItem(`aura_user_sessions_${userId}`) || '[]');
         
-        // If no sessions exist or user has no sessions, create sample data
-        if (storedSessions.length === 0 || userSessions.length === 0) {
-          console.log('No sessions found, creating sample data');
+        // If storage is empty or uses the old array format, create sample data
+        if (Object.keys(sessionsObj).length === 0 || Array.isArray(sessionsObj)) {
+          console.log('No valid sessions found, creating sample data');
           const sampleSessions = createSampleSessions();
-          userSessions = sampleSessions;
-          storedSessions = sampleSessions;
+          
+          // Re-read the properly formatted data
+          sessionsObj = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
+        }
+        
+        // Get sessions for the current user
+        let userSessions: SessionData[] = [];
+        
+        if (userSessionIds.length > 0) {
+          // Filter sessions by userSessionIds
+          userSessions = userSessionIds
+            .map((id: string) => sessionsObj[id])
+            .filter(Boolean)
+            .map((session: any) => ({
+              ...session,
+              startedAt: new Date(session.startedAt),
+              endedAt: session.endedAt ? new Date(session.endedAt) : undefined,
+              conversation: session.conversation.map((msg: any) => ({
+                ...msg,
+                timestamp: new Date(msg.timestamp)
+              }))
+            }));
+        } else {
+          // Fall back to filtering by userId
+          userSessions = Object.values(sessionsObj)
+            .filter((s: any) => s.userId === userId)
+            .map((session: any) => ({
+              ...session,
+              startedAt: new Date(session.startedAt),
+              endedAt: session.endedAt ? new Date(session.endedAt) : undefined,
+              conversation: session.conversation.map((msg: any) => ({
+                ...msg,
+                timestamp: new Date(msg.timestamp)
+              }))
+            }));
+        }
+        
+        // Create sample data if no user sessions found
+        if (userSessions.length === 0) {
+          console.log('No user sessions found, creating sample data');
+          const sampleSessions = createSampleSessions();
+          
+          // Re-read to get properly formatted sessions
+          const updatedSessionsObj = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
+          const updatedUserSessionIds = JSON.parse(localStorage.getItem(`aura_user_sessions_${userId}`) || '[]');
+          
+          userSessions = updatedUserSessionIds
+            .map((id: string) => updatedSessionsObj[id])
+            .filter(Boolean)
+            .map((session: any) => ({
+              ...session,
+              startedAt: new Date(session.startedAt),
+              endedAt: session.endedAt ? new Date(session.endedAt) : undefined,
+              conversation: session.conversation.map((msg: any) => ({
+                ...msg,
+                timestamp: new Date(msg.timestamp)
+              }))
+            }));
         }
         
         // Sort by startedAt (most recent first)
@@ -316,11 +381,9 @@ export default function AnalysisPage() {
             session.analysis = await analyzeSessionWithAI(session);
             
             // Save updated analysis back to localStorage
-            const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '[]');
-            const sessionIndex = allSessions.findIndex((s: any) => s.id === session.id);
-            
-            if (sessionIndex !== -1) {
-              allSessions[sessionIndex].analysis = session.analysis;
+            const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
+            if (allSessions[session.id]) {
+              allSessions[session.id].analysis = session.analysis;
               localStorage.setItem('aura_sessions', JSON.stringify(allSessions));
             }
           }
@@ -336,7 +399,7 @@ export default function AnalysisPage() {
         
       } catch (err) {
         console.error("Error loading sessions:", err);
-        setError('Failed to load sessions');
+        setError('Failed to load sessions. ' + (err instanceof Error ? err.message : String(err)));
       } finally {
         setIsLoading(false);
       }
@@ -384,13 +447,14 @@ export default function AnalysisPage() {
           : session
       ));
       
-      // Save to localStorage
-      const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '[]');
-      const sessionIndex = allSessions.findIndex((s: any) => s.id === selectedSession.id);
-      
-      if (sessionIndex !== -1) {
-        allSessions[sessionIndex].analysis = updatedAnalysis;
+      // Save to localStorage with correct structure
+      const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
+      if (allSessions[selectedSession.id]) {
+        allSessions[selectedSession.id].analysis = updatedAnalysis;
         localStorage.setItem('aura_sessions', JSON.stringify(allSessions));
+        
+        // Dispatch an event to notify other components
+        window.dispatchEvent(new Event('aura_session_updated'));
       }
     } catch (err) {
       console.error("Error refreshing analysis:", err);
