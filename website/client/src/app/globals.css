@@ -1,0 +1,122 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+/* Custom styles for the AI orb */
+.ai-orb {
+  position: relative;
+  width: 12rem;
+  height: 12rem;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.ai-orb::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%);
+  opacity: 0.5;
+  filter: blur(1rem);
+}
+
+@keyframes pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 0.9;
+  }
+}
+
+/* Chat Message Styles */
+.chat-message {
+  max-width: 80%;
+  padding: 1rem;
+  border-radius: 0.5rem;
+  animation: fadeIn 0.3s ease-in-out;
+  margin-bottom: 1rem;
+}
+
+.chat-message.user {
+  margin-left: auto;
+  background-color: #2563eb;
+  color: white;
+}
+
+.chat-message.ai {
+  margin-right: auto;
+  background-color: #f9fafb;
+  border: 1px solid #e5e7eb;
+}
+
+/* Session history card */
+.session-card {
+  padding: 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid #e5e7eb;
+  transition: all 0.2s ease-in-out;
+  cursor: pointer;
+}
+
+.session-card:hover {
+  border-color: #2563eb;
+}
+
+/* Voice recording button */
+.voice-button {
+  position: relative;
+  width: 4rem;
+  height: 4rem;
+  border-radius: 9999px;
+  background-color: #2563eb;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease-in-out;
+}
+
+.voice-button.recording {
+  animation: pulse 1.5s infinite;
+  color: #ef4444;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.dashboard-card {
+  padding: 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid #e5e7eb;
+  transition: all 0.2s ease-in-out;
+  cursor: pointer;
+}
+
+.dashboard-card:hover {
+  border-color: #2563eb;
+} 
