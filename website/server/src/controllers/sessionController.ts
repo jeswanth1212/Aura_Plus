@@ -77,6 +77,7 @@ export const startSession = asyncHandler(async (req: Request, res: Response) => 
     }
     
     const userId = req.user._id;
+    console.log(`Starting new session for user: ${userId}`);
     
     // Create a new session
     const session = await Session.create({
@@ -86,6 +87,8 @@ export const startSession = asyncHandler(async (req: Request, res: Response) => 
       isActive: true,
       messages: []
     });
+    
+    console.log(`Created new session with ID: ${session._id}`);
     
     try {
       // Generate initial AI greeting
@@ -160,6 +163,8 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response): Pro
       return;
     }
     
+    console.log(`Processing message for session ${sessionId} from user ${userId}`);
+    
     // Find the active session
     const session = await Session.findOne({ 
       _id: sessionId,
@@ -168,6 +173,7 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response): Pro
     });
     
     if (!session) {
+      console.error(`Session not found: ${sessionId} for user ${userId}`);
       res.status(404).json({ error: 'Active session not found' });
       return;
     }
@@ -179,7 +185,14 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response): Pro
       timestamp: new Date()
     });
     
-    await session.save();
+    try {
+      await session.save();
+      console.log(`Successfully saved user message to session ${sessionId}`);
+    } catch (saveError) {
+      console.error(`Error saving message to session: ${saveError.message}`);
+      res.status(500).json({ error: 'Failed to save message', details: saveError.message });
+      return;
+    }
     
     // Format conversation history for Gemini
     const formattedHistory = session.messages.map(msg => ({
@@ -235,6 +248,8 @@ export const endSession = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Session ID is required' });
     }
     
+    console.log(`Ending session ${sessionId} for user ${userId}`);
+    
     // Find and update the session
     const session = await Session.findOneAndUpdate(
       { 
@@ -250,6 +265,7 @@ export const endSession = async (req: Request, res: Response) => {
     );
     
     if (!session) {
+      console.error(`Session not found: ${sessionId} for user ${userId}`);
       return res.status(404).json({ error: 'Active session not found' });
     }
     

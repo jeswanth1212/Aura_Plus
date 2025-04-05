@@ -11,6 +11,7 @@ import {
   RefreshCw,
   AlertCircle
 } from 'lucide-react';
+import { ZyphraClient } from '@zyphra/client';
 
 // API Constants
 const ELEVENLABS_API_KEY = process.env.NEXT_PUBLIC_ELEVENLABS_API_KEY || '';
@@ -187,67 +188,140 @@ export default function VoiceClonePage() {
       return;
     }
     
-    if (!ELEVENLABS_API_KEY) {
-      setError('API key is missing. Please set NEXT_PUBLIC_ELEVENLABS_API_KEY in your environment.');
-      return;
-    }
-    
     setIsSubmitting(true);
     setError(null);
     
     try {
-      // Create a FormData object
-      const formData = new FormData();
-      
-      // Add the name and description
-      formData.append('name', voiceName);
-      formData.append('description', 'Created with Aura Plus voice cloning tool');
-      
-      // Add the audio file
-      if (previewSource === 'recorded' && recordedAudio) {
-        formData.append('files', recordedAudio, 'recording.wav');
-      } else if (previewSource === 'uploaded' && uploadedAudio) {
-        formData.append('files', uploadedAudio);
+      // Get Zyphra API key from environment variables
+      const ZYPHRA_API_KEY = process.env.NEXT_PUBLIC_ZYPHRA_API_KEY;
+      if (!ZYPHRA_API_KEY) {
+        setError('ZYPHRA_API_KEY is missing. Please set NEXT_PUBLIC_ZYPHRA_API_KEY in your environment.');
+        setIsSubmitting(false);
+        return;
       }
       
-      // Set the API options
-      formData.append('labels', JSON.stringify({"accent": "american"}));
+      let audioBlob: Blob | null = null;
+      let base64Audio = '';
       
-      // Call the ElevenLabs API
-      const response = await fetch('https://api.elevenlabs.io/v1/voices/add', {
-        method: 'POST',
-        headers: {
-          'xi-api-key': ELEVENLABS_API_KEY,
-          'Accept': 'application/json'
-        },
-        body: formData
+      // Process either the recorded audio or uploaded audio file
+      if (previewSource === 'recorded' && recordedAudio) {
+        audioBlob = recordedAudio;
+        
+        // Convert blob to base64 using FileReader as per Zyphra docs
+        const reader = new FileReader();
+        base64Audio = await new Promise((resolve, reject) => {
+          reader.onload = () => {
+            // Extract the base64 part after the comma
+            const result = reader.result as string;
+            const base64 = result.split(',')[1];
+            resolve(base64);
+          };
+          reader.onerror = reject;
+          // TypeScript null check
+          if (audioBlob) {
+            reader.readAsDataURL(audioBlob);
+          } else {
+            reject(new Error('Audio blob is null'));
+          }
+        });
+      } else if (previewSource === 'uploaded' && uploadedAudio) {
+        audioBlob = uploadedAudio;
+        
+        // Convert file to base64 using FileReader as per Zyphra docs
+        const reader = new FileReader();
+        base64Audio = await new Promise((resolve, reject) => {
+          reader.onload = () => {
+            // Extract the base64 part after the comma
+            const result = reader.result as string;
+            const base64 = result.split(',')[1];
+            resolve(base64);
+          };
+          reader.onerror = reject;
+          // TypeScript null check
+          if (audioBlob) {
+            reader.readAsDataURL(audioBlob);
+          } else {
+            reject(new Error('Audio blob is null'));
+          }
+        });
+      }
+      
+      if (!audioBlob || !base64Audio) {
+        throw new Error('Failed to process audio');
+      }
+      
+      console.log('Sending TTS request with base64 audio data');
+      
+      // Generate a test TTS with the cloned voice to validate
+      // We're using a simple text to test the voice cloning
+      const demoText = "This is a test of my voice clone with Zyphra";
+      
+      // Create Zyphra client instance with API key
+      const client = new ZyphraClient({ apiKey: ZYPHRA_API_KEY });
+      
+      // Use the client to create voice clone by using the audio in TTS request
+      const audioResponse = await client.audio.speech.create({
+        text: demoText,
+        speaking_rate: 15,
+        model: 'zonos-v0.1-transformer',
+        speaker_audio: base64Audio
       });
       
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail?.message || 'Failed to clone voice');
-      }
+      // Voice cloning was successful if we got a response
+      console.log('Successfully created voice clone, received audio response');
       
-      const data = await response.json();
-      setSuccess(data);
+      // Create a unique voice ID for display purposes
+      const displayVoiceId = `${voiceName}_${Date.now()}`;
       
-      // Save the voice ID to localStorage for later use
-      if (data.voice_id) {
-        const savedVoices = JSON.parse(localStorage.getItem('aura_cloned_voices') || '[]');
-        savedVoices.push({
-          id: data.voice_id,
-          name: data.name,
-          createdAt: new Date().toISOString()
-        });
-        localStorage.setItem('aura_cloned_voices', JSON.stringify(savedVoices));
-      }
+      setSuccess({
+        voice_id: displayVoiceId,
+        name: voiceName
+      });
+      
+      // CRITICAL: First remove any existing Zyphra voices to avoid conflicts
+      const savedVoices = JSON.parse(localStorage.getItem('aura_cloned_voices') || '[]');
+      const filteredVoices = savedVoices.filter((voice: any) => voice.provider !== 'zyphra');
+      
+      // Now add the new voice at the beginning (most recent)
+      filteredVoices.unshift({
+        id: base64Audio, // Store the actual base64 audio as the voice ID for Zyphra
+        name: voiceName,
+        createdAt: new Date().toISOString(),
+        provider: 'zyphra' // Mark this as a Zyphra voice
+      });
+      
+      // Save to localStorage
+      console.log('Saving cloned voice to localStorage:', voiceName);
+      localStorage.setItem('aura_cloned_voices', JSON.stringify(filteredVoices));
+      
+      // Set flag to use Zyphra for the next session
+      localStorage.setItem('aura_use_zyphra_next_session', 'true');
       
     } catch (error) {
-      console.error('Error cloning voice:', error);
+      console.error('Error cloning voice with Zyphra:', error);
       setError(error instanceof Error ? error.message : 'An unknown error occurred');
     } finally {
       setIsSubmitting(false);
     }
+  };
+  
+  // Helper function to properly convert ArrayBuffer to base64
+  const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
+    const bytes = new Uint8Array(buffer);
+    const len = bytes.byteLength;
+    let binary = '';
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return window.btoa(binary);
+  };
+  
+  // Helper function to validate base64 string
+  const isValidBase64 = (str: string): boolean => {
+    if (typeof str !== 'string') return false;
+    if (str.length === 0) return false;
+    // Simple regex for base64 validation
+    return /^[A-Za-z0-9+/=]+$/.test(str);
   };
   
   return (

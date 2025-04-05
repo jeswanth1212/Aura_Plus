@@ -13,9 +13,9 @@ export const handleSocketConnection = (io: Server) => {
     });
 
     // Handle voice data from user
-    socket.on('voice-data', async (data: { sessionId: string; audioData: Buffer }) => {
+    socket.on('voice-data', async (data: { sessionId: string; audioData: Buffer, useZyphra?: boolean }) => {
       try {
-        const { sessionId, audioData } = data;
+        const { sessionId, audioData, useZyphra = false } = data;
 
         // Convert speech to text
         const text = await VoiceService.speechToText(audioData);
@@ -28,36 +28,42 @@ export const handleSocketConnection = (io: Server) => {
 
         // Add user message to conversation
         const userMessage = {
-          speaker: 'user' as const,
-          text,
+          role: 'user',
+          content: text,
           timestamp: new Date()
         };
-        session.conversationHistory.push(userMessage);
+        
+        // Ensure conversation array exists
+        if (!session.conversation) {
+          session.conversation = [];
+        }
+        session.conversation.push(userMessage);
 
         // Generate AI response
         const aiMessage = {
-          speaker: 'ai' as const,
-          text: 'AI response placeholder', // This will be replaced by actual AI response
+          role: 'assistant',
+          content: 'AI response placeholder', // This will be replaced by actual AI response
           timestamp: new Date()
         };
-        session.conversationHistory.push(aiMessage);
+        session.conversation.push(aiMessage);
         await session.save();
 
-        // Convert AI response to speech
+        // Convert AI response to speech using Zyphra if flag is set
         const speechData = await VoiceService.textToSpeech(
-          aiMessage.text,
-          session.userId.toString() // Use user's voice clone if available
+          aiMessage.content,
+          session.voiceId,
+          useZyphra
         );
 
         // Emit the response back to the client
         io.to(`session:${sessionId}`).emit('voice-response', {
-          text: aiMessage.text,
+          text: aiMessage.content,
           audioData: speechData,
           messages: [userMessage, aiMessage]
         });
       } catch (error) {
         console.error('Error processing voice data:', error);
-        socket.emit('error', { message: 'Error processing voice data' });
+        socket.emit('error', { message: 'Failed to process voice data' });
       }
     });
 

@@ -13,6 +13,7 @@ An AI-powered therapy platform offering conversational mental health support.
    ```
    NEXT_PUBLIC_GEMINI_API_KEY=AIzaSyD9sQ_gusoVyB0Td0lFST2zbxw-FsOfoBQ
    NEXT_PUBLIC_ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
+   NEXT_PUBLIC_ZYPHRA_API_KEY=your_zyphra_api_key_here
    NEXT_PUBLIC_API_URL=http://localhost:3005
    ```
 
@@ -26,6 +27,8 @@ An AI-powered therapy platform offering conversational mental health support.
    MONGODB_URI=mongodb+srv://your_mongodb_conn_string_here
    JWT_SECRET=37d42206fadfc98bd5e4a240cf29c3af7fc8a9e27dd4e3ed84f497a8d9198e0f
    JWT_EXPIRY=30d
+   ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
+   ZYPHRA_API_KEY=your_zyphra_api_key_here
    ```
 
    In development mode, the server will bypass authentication requirements and create a mock user.

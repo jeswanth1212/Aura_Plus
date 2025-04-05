@@ -107,4 +107,7 @@ const sessionSchema = new Schema<ISession>({
 // Index for faster queries by user and start time
 sessionSchema.index({ user: 1, startTime: -1 });
 
+// Add another index for finding sessions by client ID (non-unique)
+sessionSchema.index({ 'metadata.clientSessionId': 1 }, { background: true });
+
 export const Session = mongoose.model<ISession>('Session', sessionSchema); 

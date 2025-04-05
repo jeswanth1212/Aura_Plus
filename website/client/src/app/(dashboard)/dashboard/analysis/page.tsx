@@ -287,8 +287,8 @@ export default function AnalysisPage() {
       Note that the sentiment values should sum to 1 exactly. Include 3-5 main themes with their strength (0-1 scale), and provide 2-3 personalized therapy recommendations based on the conversation content.
       `;
       
-      // Use the model name known to work
-      const modelName = "gemini-1.5-pro";
+      // Use a model name that's available in your API version
+      const modelName = "gemini-2.0-flash"; // Updated model name to match what's used elsewhere
       
       // Call Gemini API
       const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/${modelName}:generateContent?key=${apiKey}`, {
@@ -330,31 +330,37 @@ export default function AnalysisPage() {
       // Extract the JSON from the response text
       const jsonMatch = responseText.match(/{[\s\S]*}/);
       if (!jsonMatch) {
-        throw new Error('Failed to extract JSON from response');
+        console.error('Failed to extract JSON from response:', responseText);
+        return generateMockAnalysis(session);
       }
       
-      const analysisData = JSON.parse(jsonMatch[0]);
-      
-      // Also sync the session with the backend
-      syncSessionWithBackend(session);
-      
-      return {
-        sentiment: {
-          positive: parseFloat(analysisData.sentiment.positive.toFixed(2)),
-          neutral: parseFloat(analysisData.sentiment.neutral.toFixed(2)),
-          negative: parseFloat(analysisData.sentiment.negative.toFixed(2))
-        },
-        themes: analysisData.themes.map((theme: any) => ({
-          name: theme.name,
-          strength: parseFloat(theme.strength.toFixed(2))
-        })),
-        speakingTime: {
-          user: userSpeakingTime,
-          assistant: assistantSpeakingTime
-        },
-        recommendations: analysisData.recommendations,
-        lastUpdated: new Date()
-      };
+      try {
+        const analysisData = JSON.parse(jsonMatch[0]);
+        
+        // Also sync the session with the backend
+        syncSessionWithBackend(session);
+        
+        return {
+          sentiment: {
+            positive: parseFloat(analysisData.sentiment.positive.toFixed(2)),
+            neutral: parseFloat(analysisData.sentiment.neutral.toFixed(2)),
+            negative: parseFloat(analysisData.sentiment.negative.toFixed(2))
+          },
+          themes: analysisData.themes.map((theme: any) => ({
+            name: theme.name,
+            strength: parseFloat(theme.strength.toFixed(2))
+          })),
+          speakingTime: {
+            user: userSpeakingTime,
+            assistant: assistantSpeakingTime
+          },
+          recommendations: analysisData.recommendations,
+          lastUpdated: new Date()
+        };
+      } catch (jsonError) {
+        console.error('Error parsing JSON from response:', jsonError, responseText);
+        return generateMockAnalysis(session);
+      }
     } catch (err) {
       console.error('Error analyzing session with AI:', err);
       // Fall back to mock analysis
@@ -805,14 +811,38 @@ export default function AnalysisPage() {
       loadedSessions.sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
       
       console.log(`Successfully loaded ${loadedSessions.length} sessions for analysis`);
-      setSessions(loadedSessions);
+      
+      // Generate mock analysis for sessions that don't have it
+      const sessionsWithAnalysis = await Promise.all(
+        loadedSessions.map(async (session) => {
+          if (!session.analysis) {
+            console.log(`Generating mock analysis for session ${session.id}`);
+            session.analysis = generateMockAnalysis(session);
+            
+            // Save the analysis back to localStorage
+            if (allSessions[session.id]) {
+              allSessions[session.id].analysis = session.analysis;
+              localStorage.setItem('aura_sessions', JSON.stringify(allSessions));
+            }
+          }
+          return session;
+        })
+      );
+      
+      // Set the loaded sessions
+      setSessions(sessionsWithAnalysis);
       
       // If there are sessions, set the first one as selected
-      if (loadedSessions.length > 0 && !selectedSession) {
-        setSelectedSession(loadedSessions[0]);
+      if (sessionsWithAnalysis.length > 0) {
+        const firstSession = sessionsWithAnalysis[0];
+        setSelectedSession(firstSession);
+        
+        // Generate aggregate analysis from sessions with analysis
+        const newAggregateAnalysis = generateAggregateAnalysis(sessionsWithAnalysis);
+        setAggregateAnalysis(newAggregateAnalysis);
       }
       
-      // Generate analysis for sessions that don't have it yet
+      // Schedule a proper AI-based analysis refresh
       if (loadedSessions.length > 0) {
         setTimeout(() => {
           refreshAnalysis();
@@ -853,11 +883,15 @@ export default function AnalysisPage() {
 
   // Manually refresh analysis for the current session
   const refreshAnalysis = async () => {
-    if (!selectedSession || analysisInProgress) return;
+    if (!selectedSession) return;
     
     setAnalysisInProgress(true);
     try {
+      console.log("Refreshing analysis for session:", selectedSession.id);
+      
+      // Generate analysis
       const updatedAnalysis = await analyzeSessionWithAI(selectedSession);
+      console.log("Generated analysis:", updatedAnalysis);
       
       // Update in state
       setSelectedSession(prev => prev ? { ...prev, analysis: updatedAnalysis } : null);
@@ -868,6 +902,15 @@ export default function AnalysisPage() {
           ? { ...session, analysis: updatedAnalysis } 
           : session
       ));
+      
+      // Generate aggregate analysis
+      const updatedSessions = sessions.map(session => 
+        session.id === selectedSession.id 
+          ? { ...session, analysis: updatedAnalysis } 
+          : session
+      );
+      const newAggregateAnalysis = generateAggregateAnalysis(updatedSessions);
+      setAggregateAnalysis(newAggregateAnalysis);
       
       // Save to localStorage with correct structure
       const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
@@ -880,6 +923,12 @@ export default function AnalysisPage() {
       }
     } catch (err) {
       console.error("Error refreshing analysis:", err);
+      
+      // If analysis fails, generate mock analysis
+      if (selectedSession && !selectedSession.analysis) {
+        const mockAnalysis = generateMockAnalysis(selectedSession);
+        setSelectedSession(prev => prev ? { ...prev, analysis: mockAnalysis } : null);
+      }
     } finally {
       setAnalysisInProgress(false);
     }
@@ -1372,7 +1421,7 @@ export default function AnalysisPage() {
         <BarChart2 className="mr-2" /> Voice Session Analysis
       </h1>
       
-      {renderAggregateAnalysis()}
+      {aggregateAnalysis && renderAggregateAnalysis()}
       
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Session Selector */}
@@ -1386,7 +1435,21 @@ export default function AnalysisPage() {
             value={selectedSession?.id || ''}
             onChange={(e) => {
               const session = sessions.find(s => s.id === e.target.value);
-              if (session) setSelectedSession(session);
+              if (session) {
+                // If the session doesn't have analysis, generate mock analysis
+                if (!session.analysis) {
+                  const mockAnalysis = generateMockAnalysis(session);
+                  session.analysis = mockAnalysis;
+                  
+                  // Save to localStorage
+                  const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
+                  if (allSessions[session.id]) {
+                    allSessions[session.id].analysis = mockAnalysis;
+                    localStorage.setItem('aura_sessions', JSON.stringify(allSessions));
+                  }
+                }
+                setSelectedSession(session);
+              }
             }}
           >
             {sessions.map((session) => (
@@ -1397,244 +1460,147 @@ export default function AnalysisPage() {
           </select>
         </div>
         
-        {selectedSession && selectedSession.analysis && (
-          <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xl font-semibold">
-                Session on {formatDate(selectedSession.startedAt)}
-              </h2>
-              <div className="flex space-x-2">
-                <button
-                  onClick={refreshAnalysis}
-                  disabled={analysisInProgress}
-                  className={`flex items-center px-3 py-1 ${analysisInProgress ? 'bg-gray-200 cursor-not-allowed' : 'bg-gray-100 hover:bg-gray-200'} rounded-md text-sm`}
-                >
-                  <RefreshCw size={16} className={`mr-1 ${analysisInProgress ? 'animate-spin' : ''}`} /> 
-                  Reanalyze
-                </button>
-                <button
-                  onClick={exportAnalysis}
-                  className="flex items-center px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-md text-sm"
-                >
-                  <Download size={16} className="mr-1" /> Export
-                </button>
-              </div>
-            </div>
-            
-            {/* Analysis Last Updated */}
-            {selectedSession.analysis.lastUpdated && (
-              <div className="text-xs text-gray-500 mb-3">
-                Analysis last updated: {formatDate(selectedSession.analysis.lastUpdated)}
-              </div>
-            )}
-            
-            {/* Session Duration */}
-            <div className="flex items-center mb-6 text-gray-600">
-              <Clock size={18} className="mr-2" />
-              <span>
-                Duration: {
-                  selectedSession.endedAt 
-                    ? formatDuration((new Date(selectedSession.endedAt).getTime() - new Date(selectedSession.startedAt).getTime()) / 1000)
-                    : 'In progress'
-                }
-              </span>
-              <span className="mx-4">|</span>
-              <MessageCircle size={18} className="mr-2" />
-              <span>{selectedSession.conversation.length} messages exchanged</span>
-            </div>
-            
-            {/* Sentiment Analysis */}
-            <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
-              <div 
-                className="flex justify-between items-center p-4 bg-gray-50 cursor-pointer"
-                onClick={() => toggleSection('sentiment')}
-              >
-                <h3 className="font-medium">Sentiment Analysis</h3>
-                {expandedSection === 'sentiment' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+        {/* Analysis Panel */}
+        <div className="lg:col-span-3">
+          {selectedSession && (
+            <div className="bg-white rounded-lg shadow-sm p-6">
+              <div className="mb-4 flex justify-between items-center">
+                <h2 className="text-xl font-bold">Session Analysis</h2>
+                <div className="flex items-center space-x-3">
+                  <span className="text-sm text-gray-500">
+                    {selectedSession.analysis?.lastUpdated 
+                      ? `Updated: ${formatDate(selectedSession.analysis.lastUpdated)}`
+                      : 'Not analyzed yet'}
+                  </span>
+                  <button 
+                    onClick={refreshAnalysis}
+                    disabled={analysisInProgress}
+                    className={`flex items-center text-sm px-3 py-1.5 rounded-full
+                      ${analysisInProgress 
+                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
+                        : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 mr-1 ${analysisInProgress ? 'animate-spin' : ''}`} />
+                    {analysisInProgress ? 'Updating...' : 'Refresh Analysis'}
+                  </button>
+                  <button 
+                    onClick={exportAnalysis}
+                    className="flex items-center text-sm px-3 py-1.5 rounded-full bg-green-100 text-green-700 hover:bg-green-200"
+                  >
+                    <Download className="w-3.5 h-3.5 mr-1" />
+                    Export
+                  </button>
+                </div>
               </div>
               
-              {expandedSection === 'sentiment' && (
-                <div className="p-4">
-                  <div className="flex flex-col sm:flex-row justify-between mb-4">
-                    <div className="mb-4 sm:mb-0 sm:mr-4 flex-1">
-                      <h4 className="text-sm font-medium mb-2">Emotional Tone</h4>
-                      <div className="h-6 bg-gray-200 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full flex"
-                          style={{ 
-                            width: '100%',
-                          }}
-                        >
-                          <div 
-                            style={{ 
-                              width: `${selectedSession.analysis.sentiment.positive * 100}%`,
-                              backgroundColor: getSentimentColor(selectedSession.analysis.sentiment.positive, 'positive')
-                            }} 
-                            className="h-full"
-                          ></div>
-                          <div 
-                            style={{ 
-                              width: `${selectedSession.analysis.sentiment.neutral * 100}%`,
-                              backgroundColor: getSentimentColor(selectedSession.analysis.sentiment.neutral, 'neutral')
-                            }} 
-                            className="h-full"
-                          ></div>
-                          <div 
-                            style={{ 
-                              width: `${selectedSession.analysis.sentiment.negative * 100}%`,
-                              backgroundColor: getSentimentColor(selectedSession.analysis.sentiment.negative, 'negative')
-                            }} 
-                            className="h-full"
-                          ></div>
-                        </div>
-                      </div>
-                      <div className="flex justify-between mt-2 text-xs text-gray-500">
-                        <span>Positive: {Math.round(selectedSession.analysis.sentiment.positive * 100)}%</span>
-                        <span>Neutral: {Math.round(selectedSession.analysis.sentiment.neutral * 100)}%</span>
-                        <span>Negative: {Math.round(selectedSession.analysis.sentiment.negative * 100)}%</span>
-                      </div>
-                    </div>
+              {/* Session Overview */}
+              <div className="mb-6 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <div className="text-sm text-gray-500">Session Date</div>
+                  <div className="text-lg font-medium flex items-center">
+                    <Clock className="mr-1 w-4 h-4" /> 
+                    {formatDate(selectedSession.startedAt)}
                   </div>
-                  <p className="text-sm text-gray-600 mt-4">
-                    This analysis represents the emotional tone detected throughout your conversation.
-                    {selectedSession.analysis.sentiment.positive > 0.5 
-                      ? ' Your session had a predominantly positive tone.' 
-                      : selectedSession.analysis.sentiment.negative > 0.3 
-                        ? ' Your session had significant negative emotional content, which is normal when discussing challenges.'
-                        : ' Your session had a balanced emotional tone.'}
-                  </p>
                 </div>
-              )}
-            </div>
-            
-            {/* Themes */}
-            <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
-              <div 
-                className="flex justify-between items-center p-4 bg-gray-50 cursor-pointer"
-                onClick={() => toggleSection('themes')}
-              >
-                <h3 className="font-medium">Key Themes</h3>
-                {expandedSection === 'themes' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-              </div>
-              
-              {expandedSection === 'themes' && (
-                <div className="p-4">
-                  <div className="space-y-4">
-                    {selectedSession.analysis.themes.map((theme, index) => (
-                      <div key={index}>
-                        <div className="flex justify-between mb-1">
-                          <span className="text-sm font-medium">{theme.name}</span>
-                          <span className="text-sm text-gray-500">{Math.round(theme.strength * 100)}%</span>
-                        </div>
-                        <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-                          <div 
-                            className="h-full bg-blue-500"
-                            style={{ width: `${theme.strength * 100}%` }}
-                          ></div>
-                        </div>
-                      </div>
-                    ))}
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <div className="text-sm text-gray-500">Duration</div>
+                  <div className="text-lg font-medium">
+                    {selectedSession.endedAt 
+                      ? `${Math.round((new Date(selectedSession.endedAt).getTime() - 
+                          new Date(selectedSession.startedAt).getTime()) / 60000)} minutes`
+                      : 'Ongoing'}
                   </div>
-                  <p className="text-sm text-gray-600 mt-4">
-                    These themes represent the main topics discussed during your therapy session, 
-                    with percentages indicating their prominence in the conversation.
-                  </p>
                 </div>
-              )}
-            </div>
-            
-            {/* Speaking Time */}
-            <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
-              <div 
-                className="flex justify-between items-center p-4 bg-gray-50 cursor-pointer"
-                onClick={() => toggleSection('speaking')}
-              >
-                <h3 className="font-medium">Speaking Time</h3>
-                {expandedSection === 'speaking' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-              </div>
-              
-              {expandedSection === 'speaking' && (
-                <div className="p-4">
-                  <div className="space-y-4">
-                    <div>
-                      <div className="flex justify-between mb-1">
-                        <span className="text-sm font-medium">You</span>
-                        <span className="text-sm text-gray-500">
-                          {formatDuration(selectedSession.analysis.speakingTime.user)}
-                        </span>
-                      </div>
-                      <div className="h-4 bg-gray-200 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-green-500"
-                          style={{ 
-                            width: `${(selectedSession.analysis.speakingTime.user / 
-                              (selectedSession.analysis.speakingTime.user + selectedSession.analysis.speakingTime.assistant)) * 100}%` 
-                          }}
-                        ></div>
-                      </div>
-                    </div>
-                    <div>
-                      <div className="flex justify-between mb-1">
-                        <span className="text-sm font-medium">Aura AI</span>
-                        <span className="text-sm text-gray-500">
-                          {formatDuration(selectedSession.analysis.speakingTime.assistant)}
-                        </span>
-                      </div>
-                      <div className="h-4 bg-gray-200 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-blue-500"
-                          style={{ 
-                            width: `${(selectedSession.analysis.speakingTime.assistant / 
-                              (selectedSession.analysis.speakingTime.user + selectedSession.analysis.speakingTime.assistant)) * 100}%` 
-                          }}
-                        ></div>
-                      </div>
-                    </div>
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <div className="text-sm text-gray-500">Messages</div>
+                  <div className="text-lg font-medium flex items-center">
+                    <MessageCircle className="mr-1 w-4 h-4" /> 
+                    {selectedSession.conversation.length}
                   </div>
-                  <p className="text-sm text-gray-600 mt-4">
-                    This shows the estimated speaking time distribution during your conversation.
-                    {selectedSession.analysis.speakingTime.user > selectedSession.analysis.speakingTime.assistant
-                      ? ' You did most of the talking, which is ideal for a therapeutic conversation.'
-                      : ' The conversation had a balanced speaking distribution.'}
-                  </p>
                 </div>
-              )}
-            </div>
-            
-            {/* Recommendations */}
-            <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
-              <div 
-                className="flex justify-between items-center p-4 bg-gray-50 cursor-pointer"
-                onClick={() => toggleSection('recommendations')}
-              >
-                <h3 className="font-medium">Recommendations</h3>
-                {expandedSection === 'recommendations' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
               </div>
               
-              {expandedSection === 'recommendations' && (
-                <div className="p-4">
-                  <ul className="list-disc pl-5 space-y-2">
-                    {selectedSession.analysis.recommendations?.map((rec, index) => (
-                      <li key={index} className="text-gray-700">{rec}</li>
-                    ))}
-                  </ul>
-                  <p className="text-sm text-gray-600 mt-4">
-                    These personalized recommendations are based on the themes and content of your conversation.
-                    Consider implementing them to support your mental wellness goals.
-                  </p>
+              {/* Ensure analysis exists before showing analysis components */}
+              {selectedSession.analysis ? (
+                <>
+                  {/* Sentiment */}
+                  <div className="mb-6 border border-gray-200 rounded-lg overflow-hidden">
+                    <div 
+                      className="flex justify-between items-center p-4 bg-gray-50 cursor-pointer"
+                      onClick={() => toggleSection('sentiment')}
+                    >
+                      <h3 className="font-medium">Sentiment Analysis</h3>
+                      {expandedSection === 'sentiment' ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+                    </div>
+                    
+                    {expandedSection === 'sentiment' && (
+                      <div className="p-4">
+                        <div className="flex flex-col sm:flex-row justify-between mb-4">
+                          <div className="mb-4 sm:mb-0 sm:mr-4 flex-1">
+                            <h4 className="text-sm font-medium mb-2">Emotional Tone</h4>
+                            <div className="h-6 bg-gray-200 rounded-full overflow-hidden">
+                              <div 
+                                className="h-full flex"
+                                style={{ 
+                                  width: '100%',
+                                }}
+                              >
+                                <div 
+                                  style={{ 
+                                    width: `${selectedSession.analysis.sentiment.positive * 100}%`,
+                                    backgroundColor: getSentimentColor(selectedSession.analysis.sentiment.positive, 'positive')
+                                  }} 
+                                  className="h-full"
+                                ></div>
+                                <div 
+                                  style={{ 
+                                    width: `${selectedSession.analysis.sentiment.neutral * 100}%`,
+                                    backgroundColor: getSentimentColor(selectedSession.analysis.sentiment.neutral, 'neutral')
+                                  }} 
+                                  className="h-full"
+                                ></div>
+                                <div 
+                                  style={{ 
+                                    width: `${selectedSession.analysis.sentiment.negative * 100}%`,
+                                    backgroundColor: getSentimentColor(selectedSession.analysis.sentiment.negative, 'negative')
+                                  }} 
+                                  className="h-full"
+                                ></div>
+                              </div>
+                            </div>
+                            <div className="flex justify-between mt-2 text-xs text-gray-500">
+                              <span>Positive: {Math.round(selectedSession.analysis.sentiment.positive * 100)}%</span>
+                              <span>Neutral: {Math.round(selectedSession.analysis.sentiment.neutral * 100)}%</span>
+                              <span>Negative: {Math.round(selectedSession.analysis.sentiment.negative * 100)}%</span>
+                            </div>
+                          </div>
+                        </div>
+                        <p className="text-sm text-gray-600 mt-4">
+                          This analysis represents the emotional tone detected throughout your conversation.
+                          {selectedSession.analysis.sentiment.positive > 0.5 
+                            ? ' Your session had a predominantly positive tone.' 
+                            : selectedSession.analysis.sentiment.negative > 0.3 
+                              ? ' Your session had significant negative emotional content, which is normal when discussing challenges.'
+                              : ' Your session had a balanced emotional tone.'}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="p-6 text-center">
+                  <p className="text-gray-500 mb-4">No analysis available for this session yet.</p>
+                  <button 
+                    onClick={refreshAnalysis} 
+                    className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition"
+                  >
+                    Generate Analysis
+                  </button>
                 </div>
               )}
             </div>
-            
-            {/* Note about data privacy */}
-            <div className="mt-8 text-xs text-gray-500 border-t pt-4">
-              <p>
-                Note: The analysis uses AI to process your conversation and generate insights.
-                All processing is secure and your data is only used to provide this analysis.
-              </p>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

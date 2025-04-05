@@ -36,6 +36,50 @@ export default function SessionPage() {
     }
   }, [isAuthenticated, authLoading]);
 
+  // Periodically sync session to MongoDB
+  useEffect(() => {
+    if (!sessionId || messages.length === 0) return;
+    
+    const syncSession = async () => {
+      try {
+        const token = getToken();
+        if (!token) return;
+        
+        console.log('Auto-syncing session to MongoDB');
+        const sessionData = {
+          id: sessionId,
+          startedAt: new Date(),
+          conversation: messages.map(msg => ({
+            role: msg.sender === 'user' ? 'user' : 'assistant',
+            content: msg.text,
+            timestamp: msg.timestamp
+          }))
+        };
+        
+        await axios.post('/api/proxy', {
+          endpoint: 'sessions/sync',
+          sessionData
+        }, {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        console.log('Session auto-synced successfully');
+      } catch (error) {
+        console.error('Failed to auto-sync session:', error);
+      }
+    };
+    
+    // Sync every 30 seconds
+    const intervalId = setInterval(syncSession, 30000);
+    
+    // Also sync when messages change
+    syncSession();
+    
+    return () => clearInterval(intervalId);
+  }, [sessionId, messages, getToken]);
+
   const initiateSession = async () => {
     setIsThinking(true);
     setError(null);
@@ -217,6 +261,34 @@ export default function SessionPage() {
       
       if (!token) {
         throw new Error('Authentication token not found');
+      }
+      
+      // First sync the session to MongoDB
+      console.log('Syncing session to MongoDB before ending');
+      const sessionData = {
+        id: sessionId,
+        startedAt: new Date(),
+        endedAt: new Date(),
+        conversation: messages.map(msg => ({
+          role: msg.sender === 'user' ? 'user' : 'assistant',
+          content: msg.text,
+          timestamp: msg.timestamp
+        }))
+      };
+      
+      try {
+        await axios.post('/api/proxy', {
+          endpoint: 'sessions/sync',
+          sessionData
+        }, {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        console.log('Session synced successfully');
+      } catch (syncError) {
+        console.error('Failed to sync session:', syncError);
       }
       
       // Call our proxy API to end the session

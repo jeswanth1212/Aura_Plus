@@ -1,8 +1,11 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import React, { use, useEffect, useReducer, useRef, useState, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Mic, MicOff, X, Play, History, BarChart2 } from 'lucide-react';
+import TypingAnimation from '@/components/TypingAnimation';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import { ZyphraClient } from '@zyphra/client';
 
 // Conversation states
 enum ConversationState {
@@ -56,51 +59,47 @@ const stateMessages = {
 
 // API utility functions
 const apiUtils = {
-  // Voice Cloning with ElevenLabs
+  // Voice Cloning with Zyphra
   async cloneVoice(name: string): Promise<string> {
     try {
       console.log('🎭 Cloning voice with name:', name);
       
-      if (!ELEVENLABS_API_KEY) {
-        throw new Error('ELEVENLABS_API_KEY not configured');
+      // Get Zyphra API key
+      const ZYPHRA_API_KEY = process.env.NEXT_PUBLIC_ZYPHRA_API_KEY;
+      if (!ZYPHRA_API_KEY) {
+        throw new Error('ZYPHRA_API_KEY not configured');
       }
       
-      // Sample text for voice cloning
-      const sampleText = "I'm your AI therapy companion, here to help you explore your thoughts and feelings in a safe, supportive environment.";
+      // Create Zyphra client instance
+      const client = new ZyphraClient({ apiKey: ZYPHRA_API_KEY });
       
-      // Create a voice with instant voice cloning (no samples needed)
-      const response = await fetch('https://api.elevenlabs.io/v1/voices/add', {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'xi-api-key': ELEVENLABS_API_KEY
-        },
-        body: JSON.stringify({
-          name: `Aura Session ${name}`,
-          description: "AI therapist voice for Aura Plus session",
-          text_sample: sampleText,
-          voice_model_id: "eleven_multilingual_v2"
-        })
+      // According to the documentation, Zyphra doesn't have a separate voice cloning
+      // endpoint - instead, you provide a speaker_audio with each TTS request.
+      // For now, we'll just set the flag to use Zyphra for the next session,
+      // and the actual voice clone will need to be provided when making the TTS request.
+      
+      // Set the flag to use Zyphra for the next session
+      localStorage.setItem('aura_use_zyphra_next_session', 'true');
+      
+      // Generate a placeholder voice ID 
+      const voiceId = `zyphra_${name}_${Date.now()}`;
+      
+      console.log('✅ Prepared for Zyphra voice usage:', voiceId);
+      
+      // Save a placeholder voice entry to localStorage
+      const savedVoices = JSON.parse(localStorage.getItem('aura_cloned_voices') || '[]');
+      savedVoices.push({
+        id: voiceId,
+        name: `Aura Session ${name}`,
+        createdAt: new Date().toISOString(),
+        provider: 'zyphra'
       });
+      localStorage.setItem('aura_cloned_voices', JSON.stringify(savedVoices));
       
-      if (!response.ok) {
-        throw new Error(`Voice cloning error: ${response.status} ${response.statusText}`);
-      }
-      
-      const data = await response.json();
-      
-      if (!data || !data.voice_id) {
-        throw new Error('Invalid response from voice cloning API');
-      }
-      
-      console.log('✅ Successfully cloned voice with ID:', data.voice_id);
-      
-      return data.voice_id;
+      return voiceId;
     } catch (error) {
-      console.error('❌ Error in voice cloning:', error);
-      // Return default voice ID if cloning fails
-      return DEFAULT_VOICE_ID;
+      console.error('❌ Error setting up Zyphra voice:', error);
+      throw error;
     }
   },
   
@@ -212,21 +211,19 @@ const apiUtils = {
       const userContext = lastMessage && lastMessage.role === 'user' ? lastMessage.content : "How are you feeling today?";
       
       // Use consistent model name with what works in the analysis page
-      const modelName = "gemini-1.5-pro";
+      const modelName = "gemini-2.0-flash";
       
       // Create a better system prompt with length guidelines
       const systemPrompt = {
         role: "user",
         parts: [{
-          text: `You are a professional therapist named Aura. Respond to the client with empathy, insight, and therapeutic techniques appropriate to their needs. Keep responses concise (under 3 sentences for simple responses, 4-5 sentences maximum for complex topics).
+          text: `You are a therapist named Aura. Be extremely concise. 
 
-Your responses should:
-- Be warm, empathetic and supportive
-- Use reflective listening techniques
-- Provide gentle guidance when appropriate
-- Ask open-ended questions to encourage exploration
-- Avoid overly clinical language or jargon
-- Never exceed 150 words total
+Your responses must:
+- Be 1-2 sentences maximum
+- Use simple, direct language
+- Avoid unnecessary words
+- Never exceed 25 words total
 
 The client context is: ${userContext}`
         }]
@@ -276,10 +273,112 @@ The client context is: ${userContext}`
     }
   },
   
-  // ElevenLabs Text-to-Speech
+  // Text-to-Speech service selector
   async textToSpeech(text: string, voiceId: string = DEFAULT_VOICE_ID): Promise<ArrayBuffer> {
+    // Check if we should use Zyphra for this session
+    const useZyphra = localStorage.getItem('aura_use_zyphra_next_session') === 'true';
+    
+    if (useZyphra) {
+      try {
+        return await this.zyphraTTS(text, voiceId);
+      } catch (error) {
+        console.error('❌ Error using Zyphra TTS, falling back to ElevenLabs:', error);
+        // Fall back to ElevenLabs on error
+        return await this.elevenLabsTTS(text, voiceId);
+      }
+    } else {
+      // Use default ElevenLabs TTS
+      return await this.elevenLabsTTS(text, voiceId);
+    }
+  },
+  
+  // Zyphra Text-to-Speech implementation
+  async zyphraTTS(text: string, voiceId: string): Promise<ArrayBuffer> {
     try {
-      console.log('🎵 Converting text to speech using voice ID:', voiceId);
+      console.log('🎵 Converting text to speech using Zyphra');
+      
+      // Get Zyphra API key from environment variables
+      const ZYPHRA_API_KEY = process.env.NEXT_PUBLIC_ZYPHRA_API_KEY;
+      if (!ZYPHRA_API_KEY) {
+        throw new Error('ZYPHRA_API_KEY not configured in environment variables');
+      }
+      
+      // Create a Zyphra client instance
+      const client = new ZyphraClient({ apiKey: ZYPHRA_API_KEY });
+      
+      // Parameters for TTS
+      const params: any = {
+        text: text,
+        speaking_rate: 15,
+        model: 'zonos-v0.1-transformer'
+      };
+      
+      // Look for saved Zyphra voices
+      try {
+        const savedVoices = JSON.parse(localStorage.getItem('aura_cloned_voices') || '[]');
+        
+        // Find the most recent Zyphra voice
+        const zyphraVoices = savedVoices.filter((voice: any) => voice.provider === 'zyphra');
+        
+        if (zyphraVoices.length > 0) {
+          // Sort by creation date (newest first)
+          const sortedVoices = [...zyphraVoices].sort((a: any, b: any) => 
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
+          
+          // Use the most recent one
+          const latestVoice = sortedVoices[0];
+          
+          if (latestVoice && latestVoice.id) {
+            console.log('✅ Using cloned Zyphra voice:', latestVoice.name);
+            
+            // Use the saved base64 audio directly as speaker_audio
+            params.speaker_audio = latestVoice.id;
+            console.log('📊 Using voice data from saved profile');
+          } else {
+            console.log('⚠️ No valid Zyphra voice found, using default voice parameters');
+          }
+        } else {
+          console.log('⚠️ No Zyphra voices found in local storage');
+        }
+      } catch (error) {
+        console.error('❌ Error retrieving saved voices:', error);
+      }
+      
+      // Log the request (excluding the full base64 data for brevity)
+      console.log('🔄 Making Zyphra TTS request with parameters:', {
+        ...params,
+        speaker_audio: params.speaker_audio ? '[BASE64_AUDIO_DATA]' : 'none'
+      });
+      
+      // Use the Zyphra client directly
+      const audioBlob = await client.audio.speech.create(params);
+      
+      // Convert Blob to ArrayBuffer
+      const audioData = await audioBlob.arrayBuffer();
+      
+      console.log('✅ Successfully converted text to speech with Zyphra');
+      
+      return audioData;
+    } catch (error) {
+      console.error('❌ Error in Zyphra text-to-speech conversion:', error);
+      throw error;
+    }
+  },
+  
+  // Helper method to validate base64 strings
+  isValidBase64(str: string): boolean {
+    if (typeof str !== 'string') return false;
+    if (str.length === 0) return false;
+    
+    // Simple regex for base64 validation
+    return /^[A-Za-z0-9+/=]+$/.test(str);
+  },
+  
+  // Original ElevenLabs Text-to-Speech implementation
+  async elevenLabsTTS(text: string, voiceId: string = DEFAULT_VOICE_ID): Promise<ArrayBuffer> {
+    try {
+      console.log('🎵 Converting text to speech using ElevenLabs with voice ID:', voiceId);
       
       // Improved text processing for TTS
       // Split long text into chunks of up to 250 characters at sentence boundaries
@@ -302,7 +401,9 @@ The client context is: ${userContext}`
           model_id: 'eleven_turbo_v2',
           voice_settings: {
             stability: 0.5,
-            similarity_boost: 0.75
+            similarity_boost: 0.75,
+            style: 0.15,  // Add a slight style boost
+            speaking_rate: 1.15  // Speak slightly faster (15% faster than normal)
           }
         })
       });
@@ -312,11 +413,11 @@ The client context is: ${userContext}`
       }
       
       const audioData = await response.arrayBuffer();
-      console.log('✅ Successfully converted text to speech');
+      console.log('✅ Successfully converted text to speech with ElevenLabs');
       
       return audioData;
     } catch (error) {
-      console.error('❌ Error in text-to-speech conversion:', error);
+      console.error('❌ Error in ElevenLabs text-to-speech conversion:', error);
       throw error;
     }
   },
@@ -613,26 +714,73 @@ const storageUtils = {
   }
 };
 
+// Initialize Gemini AI API
+const initGemini = () => {
+  // In a real implementation, use environment variable for the API key
+  const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
+  return new GoogleGenerativeAI(apiKey);
+};
+
+// Generate speech from text using ElevenLabs API
+const generateSpeech = async (text: string, voiceId?: string): Promise<string> => {
+  try {
+    // In a real implementation, use environment variable for the API key
+    const apiKey = process.env.NEXT_PUBLIC_ELEVENLABS_API_KEY || '';
+    const voice = voiceId || 'EXAVITQu4vr4xnSDxMaL'; // Default voice if none provided
+    
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'xi-api-key': apiKey
+      },
+      body: JSON.stringify({
+        text,
+        model_id: 'eleven_turbo_v2',
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.75,
+          style: 0.15,  // Add a slight style boost
+          speaking_rate: 1.15  // Speak slightly faster (15% faster than normal)
+        }
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Speech generation failed: ${response.status}`);
+    }
+    
+    const audioBuffer = await response.arrayBuffer();
+    const audioBlob = new Blob([audioBuffer], { type: 'audio/mpeg' });
+    return URL.createObjectURL(audioBlob);
+  } catch (error) {
+    console.error('Error generating speech:', error);
+    throw error;
+  }
+};
+
 export default function Dashboard() {
   const router = useRouter();
-  const [state, setState] = useState<ConversationState>(ConversationState.INACTIVE);
-  const [isListening, setIsListening] = useState<boolean>(false);
-  const [isAISpeaking, setIsAISpeaking] = useState<boolean>(false);
+  const [conversationState, setConversationState] = useState<ConversationState>(ConversationState.INACTIVE);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const [sessionActive, setSessionActive] = useState<boolean>(false);
+  const [isAISpeaking, setIsAISpeaking] = useState<boolean>(false);
   const [animationActive, setAnimationActive] = useState<boolean>(false);
-  const [errorMessage, setErrorMessage] = useState<string>("");
   const [processingStep, setProcessingStep] = useState<string>("");
   const [textResponse, setTextResponse] = useState<string>("");
+  const [transcription, setTranscription] = useState<string>("");
   const [conversationHistory, setConversationHistory] = useState<Message[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-  const [isGeneratingAIResponse, setIsGeneratingAIResponse] = useState<boolean>(false);
-  const [aIChatMessage, setAIChatMessage] = useState<string>("");
   const [serverAvailable, setServerAvailable] = useState<boolean | null>(null);
-  
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
+  const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
+  const [sessionActive, setSessionActive] = useState(false);
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const socketRef = useRef<any>(null);
 
   // Check server availability on load
   useEffect(() => {
@@ -697,84 +845,131 @@ export default function Dashboard() {
   const beginSession = async () => {
     try {
       setErrorMessage("");
-      setState(ConversationState.CONNECTING);
-      setProcessingStep("");
-      setTextResponse("");
+      setConversationState(ConversationState.CONNECTING);
+      setTranscription("");
       
       // Create a session ID for the new session
       const sessionId = storageUtils.generateSessionId();
       
       // Check if there are any cloned voices available
       let sessionVoiceId = DEFAULT_VOICE_ID;
+      let isZyphraVoice = false;
+      
       try {
+        // CRITICAL: Check for cloned voices, with better logging
+        console.log('🔍 Checking for cloned voices...');
+        
+        // Get saved voices from localStorage
         const savedVoices = JSON.parse(localStorage.getItem('aura_cloned_voices') || '[]');
+        console.log(`📊 Found ${savedVoices.length} saved voices`);
         
         // If we have saved voices, use the most recent one
         if (savedVoices.length > 0) {
           // Sort by creation date (newest first)
-          savedVoices.sort((a: any, b: any) => 
+          const sortedVoices = [...savedVoices].sort((a, b) => 
             new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
           );
           
-          // Use the most recent voice
-          sessionVoiceId = savedVoices[0].id;
-          console.log('Using previously cloned voice:', savedVoices[0].name, sessionVoiceId);
+          const mostRecentVoice = sortedVoices[0];
+          console.log('🎤 Most recent voice:', {
+            name: mostRecentVoice.name,
+            provider: mostRecentVoice.provider,
+            createdAt: mostRecentVoice.createdAt
+          });
+          
+          // Check if it's a Zyphra voice
+          if (mostRecentVoice.provider === 'zyphra') {
+            console.log('🎤 Using Zyphra voice:', mostRecentVoice.name);
+            // For Zyphra, we need to set this flag
+            localStorage.setItem('aura_use_zyphra_next_session', 'true');
+            isZyphraVoice = true;
+            // For Zyphra, the voice ID is the base64 audio
+            sessionVoiceId = mostRecentVoice.id;
+            console.log('✅ Zyphra voice selected and flag set');
+          } else {
+            // For ElevenLabs, use the voice ID directly
+            console.log('🎤 Using ElevenLabs voice:', mostRecentVoice.name);
+            sessionVoiceId = mostRecentVoice.id;
+          }
         } else {
-          // If no saved voices, clone a new one for this session
-          sessionVoiceId = await apiUtils.cloneVoice(sessionId.substring(0, 6));
+          // If no saved voices, just use the default voice
+          console.log('🎤 No cloned voices found, using default voice');
+          sessionVoiceId = DEFAULT_VOICE_ID;
         }
       } catch (voiceError) {
-        console.error('Error getting cloned voices:', voiceError);
+        console.error('❌ Error handling voice retrieval:', voiceError);
         // Fallback to default voice
         sessionVoiceId = DEFAULT_VOICE_ID;
       }
       
-      // Create a new session with the cloned voice ID
+      // Create a new session with the voice ID
       const session = storageUtils.createSession(sessionId, sessionVoiceId);
+      
+      // Store whether this is a Zyphra voice in the session metadata
+      if (isZyphraVoice) {
+        console.log('📝 Setting session metadata for Zyphra voice');
+        session.metadata = session.metadata || {};
+        session.metadata.voiceProvider = 'zyphra';
+        storageUtils.saveSession(session);
+      }
+      
       setCurrentSessionId(session.id);
       setSessionActive(true);
       
       // Create initial greeting
-      setState(ConversationState.GREETING);
+      setConversationState(ConversationState.GREETING);
       
-      // Generate greeting message
-      const greeting = "Hello, I'm Aura, your AI therapy companion. How are you feeling today?";
-      console.log('Using greeting:', greeting);
+      // Generate initial AI greeting
+      const genAI = initGemini();
+      const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+      const chat = model.startChat({
+        history: [],
+        generationConfig: {
+          temperature: 0.7,
+          topK: 40,
+          topP: 0.95,
+          maxOutputTokens: 1024,
+        },
+      });
       
-      // Add to conversation history
-      const greetingMessage: Message = {
+      const result = await chat.sendMessage(
+        "Start a new therapy session with a very brief greeting. Keep it under 15 words. Be warm but extremely concise. Do NOT ask for the user's name or any personal information."
+      );
+      const aiResponse = result.response.text();
+      
+      // Set the AI response text before playing audio
+      setTextResponse(aiResponse);
+      
+      // Add the message to conversation history
+      setConversationHistory([{
         role: 'assistant',
-        content: greeting,
+        content: aiResponse,
         timestamp: new Date()
-      };
+      }]);
       
-      // Update local state
-      setConversationHistory([greetingMessage]);
+      console.log('🔊 Generating initial greeting audio with voice provider:', isZyphraVoice ? 'Zyphra' : 'ElevenLabs');
       
-      // Save to storage
-      if (session.id) {
-        storageUtils.addMessageToSession(session.id, greetingMessage);
+      // Generate the initial greeting audio using the appropriate voice
+      let audioUrl;
+      if (isZyphraVoice) {
+        console.log('🎤 Using Zyphra TTS for initial greeting');
+        // Use Zyphra TTS for the greeting
+        const audioData = await apiUtils.zyphraTTS(aiResponse, sessionVoiceId);
+        const audioBlob = new Blob([audioData], { type: 'audio/mp3' });
+        audioUrl = URL.createObjectURL(audioBlob);
+      } else {
+        console.log('🎤 Using ElevenLabs TTS for initial greeting');
+        // Use ElevenLabs for the greeting
+        audioUrl = await generateSpeech(aiResponse, sessionVoiceId);
       }
       
-      // Convert greeting to speech using the session's voice
-      try {
-        setState(ConversationState.SPEAKING);
-        setIsAISpeaking(true);
-        setAnimationActive(true);
-        
-        const audioData = await apiUtils.textToSpeech(greeting, session.voiceId);
-        playAudio(audioData, greeting);
-      } catch (error) {
-        console.error('Failed to create greeting audio:', error);
-        setIsAISpeaking(false);
-        setAnimationActive(false);
-        setState(ConversationState.LISTENING);
-      }
+      // Play the audio
+      playAudio(audioUrl, aiResponse);
     } catch (error) {
-      console.error('Error starting session:', error);
+      console.error('❌ Error starting session:', error);
       setErrorMessage('Failed to start session');
       setSessionActive(false);
-      setState(ConversationState.ERROR);
+      setConversationState(ConversationState.ERROR);
     }
   };
 
@@ -805,8 +1000,8 @@ export default function Dashboard() {
     .catch(error => {
       console.error('❌ Error accessing microphone:', error);
       setErrorMessage("Microphone access denied. Please allow microphone access and try again.");
-      setIsListening(false);
-      setState(ConversationState.ERROR);
+      setIsRecording(false);
+      setConversationState(ConversationState.ERROR);
     });
   };
 
@@ -829,12 +1024,12 @@ export default function Dashboard() {
         console.error('🔴 Media recorder error:', e);
       });
       
-      setIsListening(true);
-      setState(ConversationState.LISTENING);
+      setIsRecording(true);
+      setConversationState(ConversationState.LISTENING);
     } catch (error) {
       console.error('Failed to start recording:', error);
       // Ensure we handle errors gracefully
-      setIsListening(false);
+      setIsRecording(false);
       setErrorMessage('Failed to start recording. Please try again.');
     }
   }, []);
@@ -849,128 +1044,113 @@ export default function Dashboard() {
 
   // Process the entire conversation flow
   const processConversation = async (audioBlob: Blob) => {
-    if (!currentSessionId) {
-      console.error('No active session ID');
-      return;
-    }
+    if (!currentSessionId) return;
+    
+    setIsProcessing(true);
+    setConversationState(ConversationState.PROCESSING);
     
     try {
-      // Get current session to access the voice ID
-      const currentSession = storageUtils.getSession(currentSessionId);
+      // Prepare current session
+      console.log('🚀 Processing conversation for session:', currentSessionId);
+      const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
+      const currentSession = allSessions[currentSessionId];
+      
       if (!currentSession) {
-        console.error('Session not found:', currentSessionId);
-        return;
+        throw new Error(`Session ${currentSessionId} not found in storage`);
       }
       
-      // Update to processing state
-      setState(ConversationState.PROCESSING);
-      setIsProcessing(true);
-      setProcessingStep("Understanding your message...");
-      
-      // Step 1: Convert speech to text
+      // STEP 1: Speech-to-Text Conversion
       console.log('🎤 STEP 1: Speech-to-Text Conversion');
-      const userText = await apiUtils.speechToText(audioBlob);
+      setProcessingStep("Converting speech to text...");
       
-      if (!userText || userText.trim() === '') {
-        setErrorMessage('No speech detected. Please try speaking again.');
-        setIsProcessing(false);
-        setState(ConversationState.LISTENING);
-        return;
+      // Capture user's speech as text
+      let userText = '';
+      try {
+        userText = await apiUtils.speechToText(audioBlob);
+        console.log('✅ Speech converted to text:', userText);
+      } catch (sttError) {
+        console.error('❌ Error in speech-to-text conversion:', sttError);
+        // If STT fails, use a default message
+        userText = "I'm having trouble processing what you said. Could you please repeat that?";
       }
       
-      // Create user message
+      // Update transcript and UI
+      setTranscription(userText);
+      
+      // Add user's message to conversation history
       const userMessage: Message = {
         role: 'user',
         content: userText,
         timestamp: new Date()
       };
+      currentSession.conversation.push(userMessage);
       
-      // Add to conversation history
-      console.log('📝 Adding user message to conversation history:', userText);
-      const updatedHistory = [...conversationHistory, userMessage];
-      setConversationHistory(updatedHistory);
+      // Save session update to localStorage
+      allSessions[currentSessionId] = currentSession;
+      localStorage.setItem('aura_sessions', JSON.stringify(allSessions));
       
-      // Save user message to storage
-      storageUtils.addMessageToSession(currentSessionId, userMessage);
+      // Get final state of session for next steps
+      const finalSession = JSON.parse(localStorage.getItem('aura_sessions') || '{}')[currentSessionId];
       
-      // Get updated session with the new user message
-      const updatedSession = storageUtils.getSession(currentSessionId);
-      if (!updatedSession) {
-        console.error('Session not found after adding user message');
-        return;
+      // Step 2: Generate AI Response
+      console.log('🧠 STEP 2: Generating AI Response');
+      setProcessingStep("Generating response...");
+      
+      let aiResponse = '';
+      try {
+        aiResponse = await apiUtils.generateResponse(conversationHistory);
+        console.log('✅ Generated AI response:', aiResponse);
+      } catch (aiError) {
+        console.error('❌ Error generating AI response:', aiError);
+        // Fallback response if AI generation fails
+        aiResponse = "I'm having a moment - let me gather my thoughts. What else would you like to discuss?";
       }
       
-      // Step 2: Generate AI response
-      console.log('🤖 STEP 2: Generating AI Response');
-      setProcessingStep("Thinking about your response...");
-      const aiResponse = await apiUtils.generateResponse(updatedHistory);
-      
-      // Create AI message
+      // Add AI message to conversation
       const aiMessage: Message = {
         role: 'assistant',
         content: aiResponse,
         timestamp: new Date()
       };
       
-      // Add AI response to conversation history
-      console.log('📝 Adding AI response to conversation history:', aiResponse);
-      const finalHistory = [...updatedHistory, aiMessage];
-      setConversationHistory(finalHistory);
-      
-      // Save AI message to storage
-      storageUtils.addMessageToSession(currentSessionId, aiMessage);
-      
-      // Get final updated session after adding AI message
-      const finalSession = storageUtils.getSession(currentSessionId);
-      if (!finalSession) {
-        console.error('Session not found after adding AI message');
-        return;
-      }
-      
-      // Log the conversation size to verify it's being stored correctly
-      console.log(`💬 Conversation now has ${finalSession.conversation.length} messages`);
-      
-      // Double-check that the session is properly saved
-      storageUtils.saveSession(finalSession);
-      
-      // Explicitly save the session to localStorage again to be extra sure
-      const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
+      finalSession.conversation.push(aiMessage);
       allSessions[currentSessionId] = finalSession;
       localStorage.setItem('aura_sessions', JSON.stringify(allSessions));
-      console.log('📝 Explicitly saved updated session to localStorage');
-      
-      // Dispatch an event to notify other components that a session was updated
-      const event = new CustomEvent('aura_session_updated', { 
-        detail: { sessionId: currentSessionId }
-      });
-      window.dispatchEvent(event);
-      console.log('🔔 Dispatched session updated event');
-      
-      // Send the text response immediately to appear responsive
-      console.log('📤 Showing immediate text response');
-      setTextResponse(aiResponse);
+      setConversationHistory(prev => [...prev, userMessage, aiMessage]);
       
       // Step 3: Convert response to speech using the session's voice ID
       console.log('🔊 STEP 3: Text-to-Speech Conversion');
       setProcessingStep("Creating voice response...");
       
       try {
-        // Use the voice ID associated with this session
-        const audioData = await apiUtils.textToSpeech(aiResponse, finalSession.voiceId);
+        // Check if the session has Zyphra voice provider in metadata
+        const isZyphraVoice = finalSession.metadata?.voiceProvider === 'zyphra' || 
+                             localStorage.getItem('aura_use_zyphra_next_session') === 'true';
+        
+        let audioData;
+        if (isZyphraVoice) {
+          console.log('🎤 Using Zyphra voice for TTS');
+          // Use Zyphra for TTS
+          audioData = await apiUtils.zyphraTTS(aiResponse, finalSession.voiceId);
+        } else {
+          console.log('🎤 Using ElevenLabs voice for TTS');
+          // Use ElevenLabs for TTS
+          audioData = await apiUtils.elevenLabsTTS(aiResponse, finalSession.voiceId);
+        }
         
         // Clear processing state
         setIsProcessing(false);
         setProcessingStep("");
         
         // Play the audio
-        setState(ConversationState.SPEAKING);
+        setConversationState(ConversationState.SPEAKING);
         setIsAISpeaking(true);
         playAudio(audioData, aiResponse);
       } catch (ttsError) {
         console.error('❌ Error in text-to-speech conversion:', ttsError);
         // If TTS fails, still move to listening state
         setIsProcessing(false);
-        setState(ConversationState.LISTENING);
+        setConversationState(ConversationState.LISTENING);
       }
       
       // Sync with backend if connected
@@ -979,65 +1159,100 @@ export default function Dashboard() {
       console.error('❌ Error processing conversation:', error);
       setErrorMessage('Failed to process your message. Please try again.');
       setIsProcessing(false);
-      setState(ConversationState.LISTENING);
+      setConversationState(ConversationState.LISTENING);
     }
   };
 
   // Play audio and handle completion
-  const playAudio = (audioData: ArrayBuffer, text: string) => {
-    if (!audioRef.current) return;
-    
+  const playAudio = (audioData: ArrayBuffer | string, responseText: string) => {
     try {
-      // Update UI to show we're playing audio
+      console.log('▶️ Playing audio response...');
       setIsAISpeaking(true);
       setAnimationActive(true);
-      setTextResponse(""); // Clear text response when audio plays
       
-      // Convert the buffer to a Blob
-      const audioBlob = new Blob([audioData], { type: 'audio/mp3' });
-      const audioUrl = URL.createObjectURL(audioBlob);
+      // Set the text to be shown in the typing animation
+      setTextResponse(responseText);
       
-      // Log the actual audio size
-      console.log(`🔊 Created audio blob size: ${audioBlob.size} bytes`);
+      // Add the AI message to conversation history
+      setConversationHistory(prev => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: responseText,
+          timestamp: new Date()
+        }
+      ]);
       
-      // Set the audio source
-      audioRef.current.src = audioUrl;
-      
-      // Set up onended before playing
-      audioRef.current.onended = () => {
-        console.log('🔊 Audio playback completed');
-        // Clean up the URL object to prevent memory leaks
-        URL.revokeObjectURL(audioUrl);
+      if (audioRef.current) {
+        // Handle different types of audio data
+        if (typeof audioData === 'string') {
+          // Already a URL or Data URL
+          audioRef.current.src = audioData;
+        } else {
+          // Convert ArrayBuffer to Blob URL
+          const audioBlob = new Blob([audioData], { type: 'audio/mp3' });
+          const audioUrl = URL.createObjectURL(audioBlob);
+          audioRef.current.src = audioUrl;
+          
+          // Set up cleanup for the created URL
+          const originalOnEnded = audioRef.current.onended;
+          audioRef.current.onended = (event) => {
+            URL.revokeObjectURL(audioUrl);
+            if (originalOnEnded && typeof originalOnEnded === 'function') {
+              // Use proper function call with correct this context
+              originalOnEnded.call(audioRef.current!, event);
+            }
+          };
+        }
         
-        setIsAISpeaking(false);
-        setAnimationActive(false);
+        audioRef.current.onended = () => {
+          console.log('🔊 Audio playback ended');
+          setIsAISpeaking(false);
+          setAnimationActive(false);
+          setConversationState(ConversationState.LISTENING);
+          
+          // After the AI finishes speaking, reset the Zyphra flag
+          // This ensures it's only used for one complete AI response
+          localStorage.removeItem('aura_use_zyphra_next_session');
+        };
         
-        // Move back to listening state after AI finished speaking
-        setState(ConversationState.LISTENING);
-      };
-      
-      // Handle audio loading error
-      audioRef.current.onerror = (e) => {
-        console.error('🔴 Audio loading error:', e);
-        URL.revokeObjectURL(audioUrl);
+        audioRef.current.onerror = () => {
+          console.error('🔴 Audio playback error');
+          setIsAISpeaking(false);
+          setAnimationActive(false);
+          setConversationState(ConversationState.LISTENING);
+          
+          // Also reset on error
+          localStorage.removeItem('aura_use_zyphra_next_session');
+        };
+        
+        // Play the audio
+        audioRef.current.play().catch(err => {
+          console.error('🔴 Failed to play audio:', err);
+          setIsAISpeaking(false);
+          setAnimationActive(false);
+          setConversationState(ConversationState.LISTENING);
+          
+          // Also reset on playback failure
+          localStorage.removeItem('aura_use_zyphra_next_session');
+        });
+      } else {
+        console.error('🔴 Audio element not found');
         setIsAISpeaking(false);
         setAnimationActive(false);
-        setState(ConversationState.LISTENING);
-      };
-      
-      // Play with error handling
-      audioRef.current.play().catch(error => {
-        console.error('🔴 Audio playback error:', error);
-        URL.revokeObjectURL(audioUrl);
-        setIsAISpeaking(false);
-        setAnimationActive(false);
-        setState(ConversationState.LISTENING);
-      });
+        setConversationState(ConversationState.LISTENING);
+        
+        // Also reset if audio element missing
+        localStorage.removeItem('aura_use_zyphra_next_session');
+      }
     } catch (error) {
-      console.error('🔴 Error creating audio blob:', error);
+      console.error('🔴 Error playing audio:', error);
       setIsAISpeaking(false);
       setAnimationActive(false);
-      setState(ConversationState.LISTENING);
+      setConversationState(ConversationState.LISTENING);
+      
+      // Also reset on general error
+      localStorage.removeItem('aura_use_zyphra_next_session');
     }
   };
 
@@ -1099,7 +1314,7 @@ export default function Dashboard() {
   // Toggle the microphone
   const toggleMicrophone = useCallback(() => {
     console.log('🎙️ Toggling microphone, current states:', {
-      isListening,
+      isRecording,
       isProcessing,
       isAISpeaking
     });
@@ -1110,17 +1325,17 @@ export default function Dashboard() {
       return;
     }
     
-    if (isListening) {
+    if (isRecording) {
       // ---- STOPPING MICROPHONE ----
       console.log('🛑 Stopping microphone recording');
       
       // Update UI first for immediate feedback
-      setIsListening(false);
+      setIsRecording(false);
       
       // This is critical - update to processing state immediately
       setIsProcessing(true);
       setProcessingStep("Understanding your message...");
-      setState(ConversationState.PROCESSING);
+      setConversationState(ConversationState.PROCESSING);
       
       // CRITICAL: Request a final chunk of data before stopping
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
@@ -1150,171 +1365,148 @@ export default function Dashboard() {
       // Initialize the microphone
       initializeMicrophone();
     }
-  }, [isListening, isProcessing, isAISpeaking, sessionActive]);
+  }, [isRecording, isProcessing, isAISpeaking, sessionActive]);
 
   // End the conversation session
   const endSession = () => {
     cleanupAudioResources();
-    
+     
     // End the session in storage
     if (currentSessionId) {
       storageUtils.endSession(currentSessionId);
-      
+       
       // Optional: Sync with backend
       storageUtils.syncWithBackend(currentSessionId);
+      
+      // Reset Zyphra use flag since session is now complete
+      localStorage.removeItem('aura_use_zyphra_next_session');
     }
-    
+     
     setSessionActive(false);
-    setState(ConversationState.ENDED);
-    
-    // Navigate to history page after a delay
-    setTimeout(() => {
-      router.push('/dashboard/analysis');
-    }, 2000);
+    setConversationState(ConversationState.ENDED);
+     
+    // Stay on the current page instead of navigating away
   };
 
-  // Get appropriate status message
+  // Get appropriate status message with more detail
   const getStatusMessage = () => {
-    return stateMessages[state] || "Ready";
+    if (isRecording) {
+      return "Listening... (tap mic to stop)";
+    } else if (isProcessing) {
+      return processingStep || "Processing your message...";
+    } else if (isAISpeaking) {
+      return "Aura is speaking...";
+    } else {
+      return stateMessages[conversationState] || "Ready";
+    }
+  };
+
+  // Process audio through socket
+  const processAudioThroughSocket = async (audioBlob: Blob) => {
+    try {
+      if (!socketRef.current) {
+        throw new Error('Socket connection not established');
+      }
+      
+      // Convert Blob to ArrayBuffer
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      const audioBuffer = new Uint8Array(arrayBuffer);
+      
+      // Check if we should use Zyphra for this session
+      const useZyphra = localStorage.getItem('aura_use_zyphra_next_session') === 'true';
+      
+      // Send audio data to the server
+      socketRef.current.emit('voice-data', {
+        sessionId: currentSessionId,
+        audioData: Array.from(audioBuffer),
+        useZyphra
+      });
+      
+      return new Promise((resolve, reject) => {
+        // Set up a one-time listener for the response
+        socketRef.current?.once('voice-response', (response: any) => {
+          resolve(response);
+        });
+        
+        // Handle errors
+        socketRef.current?.once('error', (error: any) => {
+          reject(error);
+        });
+        
+        // Set a timeout in case the server doesn't respond
+        setTimeout(() => {
+          reject(new Error('Socket response timeout'));
+        }, 10000); // 10-second timeout
+      });
+    } catch (error) {
+      console.error('Error processing audio through socket:', error);
+      throw error;
+    }
   };
 
   return (
-    <div className="p-4 md:p-8">
-      <div className="max-w-4xl mx-auto">
-        {serverAvailable === false && (
-          <div className="bg-amber-50 border border-amber-300 p-4 rounded-lg mb-6">
-            <h3 className="text-amber-800 font-medium mb-1">Server Unavailable</h3>
-            <p className="text-amber-700 text-sm">
-              The app is currently operating in offline mode. Your conversations will be stored locally, 
-              but sync with the server is unavailable. Start the server with <code className="bg-amber-100 px-1 rounded">npm run dev</code> 
-              in the server directory to enable full functionality.
-            </p>
+    <div className="flex flex-col items-center justify-center h-full mx-auto max-w-4xl px-4">
+      <div className="mb-8 text-center">
+        <p className="text-gray-600">{getStatusMessage()}</p>
+        {errorMessage && (
+          <p className="text-red-600 mt-2">{errorMessage}</p>
+        )}
+      </div>
+      
+      <div className="relative flex items-center justify-center w-full mb-4">
+        <div className={`ai-orb ${
+          animationActive ? 'animate-pulse' : ''
+        }`}></div>
+      </div>
+      
+      {/* Typing animation for AI response */}
+      {isAISpeaking && (
+        <div className="mb-8 w-full max-w-lg">
+          <TypingAnimation text={textResponse} speed={20} />
+        </div>
+      )}
+      
+      <div className="w-full max-w-md flex flex-col items-center space-y-6">
+        {/* Begin Session button */}
+        {!sessionActive && (
+          <button
+            className="calmi-button w-full"
+            onClick={beginSession}
+            disabled={conversationState === ConversationState.CONNECTING}
+          >
+            begin session
+          </button>
+        )}
+        
+        {/* Control buttons */}
+        {sessionActive && (
+          <div className="flex space-x-10 items-center">
+            {/* Microphone button */}
+            <button
+              onClick={toggleMicrophone}
+              disabled={isAISpeaking || isProcessing}
+              className={`voice-button ${
+                isRecording 
+                  ? 'bg-red-500 text-white' 
+                  : isAISpeaking || isProcessing 
+                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed' 
+                    : ''
+              }`}
+              aria-label={isRecording ? "Stop speaking" : "Start speaking"}
+            >
+              {isRecording ? <MicOff size={24} /> : <Mic size={24} />}
+            </button>
+            
+            {/* End session button - always enabled */}
+            <button
+              onClick={endSession}
+              className="voice-button bg-red-500 text-white"
+              aria-label="End session"
+            >
+              <X size={24} />
+            </button>
           </div>
         )}
-      
-        <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
-          <h1 className="text-2xl font-bold text-gray-900 mb-2">Voice Therapy Session</h1>
-          <p className="text-gray-600">{getStatusMessage()}</p>
-          {errorMessage && (
-            <p className="text-red-500 mt-2">{errorMessage}</p>
-          )}
-        </div>
-        
-        <div className="flex flex-col items-center justify-center py-8">
-          {/* AI Orb */}
-          <div 
-            className={`relative w-40 h-40 rounded-full flex items-center justify-center mb-10 
-                     bg-gradient-to-br from-blue-400 to-purple-600 shadow-lg
-                     transition-all duration-300
-                     ${animationActive ? 'animate-pulse scale-105' : ''}`}
-          >
-            <div className={`absolute w-36 h-36 rounded-full 
-                          bg-gradient-to-br from-blue-300 to-purple-500 
-                          opacity-75 transition-opacity duration-300
-                          ${animationActive ? 'animate-ping' : 'opacity-50'}`}></div>
-            <div className="z-10 w-32 h-32 rounded-full bg-white flex items-center justify-center">
-              <div className={`w-24 h-24 rounded-full bg-gradient-to-br from-blue-500 to-purple-700 
-                           transition-all duration-300
-                           ${animationActive ? 'animate-pulse' : ''}`}></div>
-            </div>
-              </div>
-          
-          {/* Begin Session button */}
-          {!sessionActive && (
-            <button
-              onClick={beginSession}
-              className="w-48 h-14 rounded-full bg-green-600 text-white hover:bg-green-700 flex items-center justify-center mb-10 transition-colors duration-200"
-            >
-              <Play size={20} className="mr-2" />
-              Begin Session
-            </button>
-          )}
-          
-          {/* Control buttons */}
-          {sessionActive && (
-            <div className="flex space-x-10 items-center">
-              {/* Microphone button */}
-              <button
-                onClick={toggleMicrophone}
-                disabled={isAISpeaking || isProcessing}
-                className={`w-14 h-14 rounded-full flex items-center justify-center transition-all duration-200 ${
-                  isListening 
-                    ? 'bg-red-500 text-white' 
-                    : isAISpeaking || isProcessing 
-                      ? 'bg-gray-300 text-gray-500 cursor-not-allowed' 
-                      : 'bg-blue-600 text-white hover:bg-blue-700'
-                }`}
-                aria-label={isListening ? "Stop speaking" : "Start speaking"}
-              >
-                {isListening ? <MicOff size={24} /> : <Mic size={24} />}
-              </button>
-              
-              {/* End session button - always enabled */}
-              <button
-                onClick={endSession}
-                className="w-14 h-14 rounded-full flex items-center justify-center transition-all duration-200 bg-red-600 text-white hover:bg-red-700"
-                aria-label="End session"
-              >
-                <X size={24} />
-              </button>
-            </div>
-          )}
-          
-          {/* AI Speaking indicator */}
-          {isAISpeaking && (
-            <div className="mt-6 flex flex-col items-center">
-              <div className="text-sm text-gray-500 mb-2">
-                Aura is speaking...
-              </div>
-              <div className="flex items-center space-x-1">
-                <div className="bg-blue-500 w-2 h-6 rounded-full animate-pulse"></div>
-                <div className="bg-blue-500 w-2 h-10 rounded-full animate-pulse delay-75"></div>
-                <div className="bg-blue-500 w-2 h-8 rounded-full animate-pulse delay-150"></div>
-                <div className="bg-blue-500 w-2 h-4 rounded-full animate-pulse delay-300"></div>
-                <div className="bg-blue-500 w-2 h-7 rounded-full animate-pulse delay-200"></div>
-              </div>
-            </div>
-          )}
-          
-          {/* Processing indicator */}
-          {isProcessing && (
-            <div className="mt-6 flex flex-col items-center">
-              <div className="text-sm text-gray-500 mb-2">
-                {processingStep || "Processing your message..."}
-              </div>
-              <div className="flex items-center space-x-1">
-                <div className="h-2 w-2 bg-blue-500 rounded-full animate-bounce"></div>
-                <div className="h-2 w-2 bg-blue-500 rounded-full animate-bounce delay-150"></div>
-                <div className="h-2 w-2 bg-blue-500 rounded-full animate-bounce delay-300"></div>
-              </div>
-              {textResponse && (
-                <div className="mt-4 text-sm text-gray-600 max-w-md text-center">
-                  <p>{textResponse}</p>
-                  <p className="text-xs text-gray-400 mt-2">Creating voice response...</p>
-                </div>
-              )}
-            </div>
-          )}
-          
-          {/* Recording status */}
-          {isListening && (
-            <div className="mt-6 flex flex-col items-center">
-              <div className="text-sm text-gray-500 mb-2">
-                Listening...
-          </div>
-              <div className="flex items-center space-x-1">
-                <div className="bg-red-500 w-2 h-6 rounded-full animate-pulse"></div>
-                <div className="bg-red-500 w-2 h-10 rounded-full animate-pulse delay-75"></div>
-                <div className="bg-red-500 w-2 h-8 rounded-full animate-pulse delay-150"></div>
-                <div className="bg-red-500 w-2 h-4 rounded-full animate-pulse delay-300"></div>
-                <div className="bg-red-500 w-2 h-7 rounded-full animate-pulse delay-200"></div>
-              </div>
-              <div className="text-xs text-gray-400 mt-2">
-                Tap mic to stop recording
-              </div>
-            </div>
-          )}
-        </div>
       </div>
     </div>
   );
