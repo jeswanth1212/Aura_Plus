@@ -148,12 +148,16 @@ export const useAuthStore = create<AuthState>((set, get) => {
         console.log("Login response:", response.data);
         
         // If the login is successful
-        if (response.data && response.data.token) {
-          const userData = response.data.user;
+        if (response.data.success) {
+          const userData = response.data;
           
           // Check if email is verified
-          if (!userData.emailVerified) {
-            set({ isLoading: false, error: 'Please verify your email before logging in' });
+          if (!userData.isVerified) {
+            set({ 
+              isLoading: false, 
+              error: 'Please verify your email before logging in',
+              requiresVerification: true 
+            });
             return { 
               success: false, 
               error: 'Please verify your email before logging in',
@@ -162,27 +166,28 @@ export const useAuthStore = create<AuthState>((set, get) => {
           }
           
           // Store token and user data
-          localStorage.setItem('token', response.data.token);
+          localStorage.setItem('token', userData.token);
           localStorage.setItem('user', JSON.stringify(userData));
           
           // Set auth header for all future requests
-          axios.defaults.headers.common['Authorization'] = `Bearer ${response.data.token}`;
+          axios.defaults.headers.common['Authorization'] = `Bearer ${userData.token}`;
           
           set({ 
             user: userData, 
-            token: response.data.token, 
+            token: userData.token, 
             isLoading: false,
             isAuthenticated: true,
             error: null
           });
           
           // Set cookie for SSR
-          setCookie('token', response.data.token);
+          setCookie('token', userData.token);
           
           return { success: true, userData };
         } else {
-          set({ isLoading: false, error: 'Invalid response from server' });
-          return { success: false, error: 'Invalid response from server' };
+          const errorMsg = response.data.message || 'Login failed';
+          set({ isLoading: false, error: errorMsg });
+          return { success: false, error: errorMsg };
         }
       } catch (err: any) {
         console.error("Login error:", err);
@@ -198,8 +203,12 @@ export const useAuthStore = create<AuthState>((set, get) => {
             errorMessage = 'Invalid email or password';
           } else if (err.response.status === 403) {
             // Check if it's due to email verification
-            if (err.response.data && err.response.data.verified === false) {
-              set({ isLoading: false, error: 'Please verify your email before logging in' });
+            if (err.response.data && !err.response.data.isVerified) {
+              set({ 
+                isLoading: false, 
+                error: 'Please verify your email before logging in',
+                requiresVerification: true 
+              });
               return { 
                 success: false, 
                 error: 'Please verify your email before logging in',
@@ -225,7 +234,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
         console.log('Attempting registration for:', email);
         
         // Make registration request
-        const response = await axios.post(`${API_URL}/api/auth/register`, { 
+        const response = await axios.post(`${API_URL}/auth/register`, { 
           name, 
           email, 
           password 
@@ -295,8 +304,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
       
       try {
         set({ isLoading: true });
-        // Update URL to match server route definition
-        const response = await axios.get(`${API_URL}/api/auth/me`);
+        const response = await axios.get(`${API_URL}/auth/me`);
         const { success, ...userData } = response.data;
         
         if (!success) {
@@ -394,4 +402,4 @@ export function useAuthProtection(requireVerification = true) {
   }, [isAuthenticated, isLoading, router, user, requireVerification]);
   
   return { isAuthenticated, isLoading, user, requiresVerification };
-} 
+}

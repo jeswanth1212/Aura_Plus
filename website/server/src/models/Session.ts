@@ -13,7 +13,6 @@ export interface ISession extends Document {
   isActive: boolean;
   messages: Message[];
   summary?: string;
-  userId?: mongoose.Types.ObjectId;
   startedAt?: Date;
   endedAt?: Date;
   conversation?: any[];
@@ -52,10 +51,6 @@ const sessionSchema = new Schema<ISession>({
     type: Schema.Types.ObjectId,
     ref: 'User',
     required: true
-  },
-  userId: {
-    type: Schema.Types.ObjectId,
-    ref: 'User'
   },
   startTime: {
     type: Date,
@@ -109,8 +104,7 @@ const sessionSchema = new Schema<ISession>({
   timestamps: true
 });
 
-// Index for faster queries by user
+// Index for faster queries by user and start time
 sessionSchema.index({ user: 1, startTime: -1 });
-sessionSchema.index({ userId: 1, startedAt: -1 });
 
 export const Session = mongoose.model<ISession>('Session', sessionSchema); 

@@ -40,7 +40,7 @@ export default function VerificationRequiredPage() {
 
     try {
       const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3005';
-      const response = await axios.post(`${API_URL}/api/auth/resend-verification`, {
+      const response = await axios.post(`${API_URL}/auth/resend-verification`, {
         email: emailToUse
       });
 

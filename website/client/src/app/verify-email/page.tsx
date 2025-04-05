@@ -22,7 +22,7 @@ export default function VerifyEmailPage() {
     const verifyEmail = async () => {
       try {
         const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3005';
-        await axios.get(`${API_URL}/api/auth/verify-email/${token}`);
+        await axios.get(`${API_URL}/auth/verify-email/${token}`);
         setStatus('success');
         setMessage('Your email has been successfully verified!');
         

@@ -22,16 +22,19 @@ const generateToken = (id: Schema.Types.ObjectId | string): string => {
   // Generate token with the JWT_SECRET from environment variables
   return jwt.sign({ id }, jwtSecret, {
     expiresIn: process.env.JWT_EXPIRY || '30d'
-  });
+  } as jwt.SignOptions);
 };
 
 // Register a new user
-export const register = asyncHandler(async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const register = asyncHandler(async (req: Request, res: Response) => {
   const { name, email, password } = req.body;
 
   try {
+    console.log('Registration attempt:', { name, email, passwordLength: password?.length });
+    
     // Validate inputs
     if (!name || !email || !password) {
+      console.log('Missing required fields:', { name: !!name, email: !!email, password: !!password });
       res.status(400).json({
         success: false,
         error: 'Invalid input',
@@ -41,6 +44,7 @@ export const register = asyncHandler(async (req: Request, res: Response, next: N
     }
 
     if (password.length < 6) {
+      console.log('Password too short:', password.length);
       res.status(400).json({
         success: false,
         error: 'Invalid input',
@@ -50,8 +54,10 @@ export const register = asyncHandler(async (req: Request, res: Response, next: N
     }
 
     // Check if user already exists
+    console.log('Checking for existing user with email:', email);
     const existingUser = await User.findOne({ email });
     if (existingUser) {
+      console.log('User already exists with email:', email);
       res.status(400).json({
         success: false,
         error: 'Registration failed',
@@ -61,28 +67,36 @@ export const register = asyncHandler(async (req: Request, res: Response, next: N
     }
 
     // Generate verification token
+    console.log('Generating verification token');
     const verificationToken = crypto.randomBytes(32).toString('hex');
 
     // Create new user - don't hash password here, the pre-save hook will do it
+    console.log('Creating new user');
     const user = await User.create({
       name,
       email,
       password, // Pass the plain password, model's pre-save hook will hash it
       verificationToken
     });
+    console.log('User created successfully:', user._id);
 
     // Try to send verification email, but don't fail registration if it fails
     try {
+      console.log('Attempting to send verification email');
       await EmailService.sendVerificationEmail(email, verificationToken);
+      console.log('Verification email sent successfully');
     } catch (emailError) {
       console.error('Error sending verification email:', emailError);
       // Don't return error - allow registration to continue
     }
 
     // Generate JWT token
+    console.log('Generating JWT token');
     const token = generateToken(user._id);
+    console.log('JWT token generated successfully');
 
     // Return user info and token
+    console.log('Sending successful registration response');
     res.status(201).json({
       success: true,
       _id: user._id,
@@ -91,8 +105,13 @@ export const register = asyncHandler(async (req: Request, res: Response, next: N
       isVerified: user.isVerified,
       token
     });
-  } catch (error) {
-    console.error('Registration error:', error);
+  } catch (error: any) {
+    console.error('Registration error details:', {
+      message: error.message,
+      stack: error.stack,
+      code: error.code,
+      name: error.name
+    });
     res.status(500).json({
       success: false,
       error: 'Server error',
@@ -102,7 +121,7 @@ export const register = asyncHandler(async (req: Request, res: Response, next: N
 });
 
 // Login user
-export const login = asyncHandler(async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const login = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
   const { email, password } = req.body;
 
   try {
@@ -171,7 +190,7 @@ export const login = asyncHandler(async (req: Request, res: Response, next: Next
 });
 
 // Verify email
-export const verifyEmail = asyncHandler(async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const verifyEmail = asyncHandler(async (req: Request, res: Response) => {
   try {
     const { token } = req.params;
     
@@ -185,7 +204,21 @@ export const verifyEmail = asyncHandler(async (req: Request, res: Response, next
     }
     
     // Find user with this verification token
-    const user = await User.findOne({ verificationToken: token });
+    let user;
+    try {
+      user = await User.findOne({ verificationToken: token });
+    } catch (dbError: any) {
+      console.error('Database error during email verification:', dbError);
+      if (dbError.name === 'MongoNetworkError') {
+        res.status(503).json({
+          success: false,
+          error: 'Service unavailable',
+          message: 'Unable to verify email at the moment. Please try again later.'
+        });
+        return;
+      }
+      throw dbError;
+    }
     
     if (!user) {
       res.status(400).json({
@@ -199,7 +232,18 @@ export const verifyEmail = asyncHandler(async (req: Request, res: Response, next
     // Mark user as verified and clear the verification token
     user.isVerified = true;
     user.verificationToken = undefined;
-    await user.save();
+    
+    try {
+      await user.save();
+    } catch (saveError: any) {
+      console.error('Error saving user verification status:', saveError);
+      res.status(500).json({
+        success: false,
+        error: 'Server error',
+        message: 'Failed to update verification status'
+      });
+      return;
+    }
     
     // Send welcome email
     try {
@@ -225,7 +269,7 @@ export const verifyEmail = asyncHandler(async (req: Request, res: Response, next
 });
 
 // Request password reset
-export const forgotPassword = asyncHandler(async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const forgotPassword = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email } = req.body;
 
@@ -263,11 +307,12 @@ export const forgotPassword = asyncHandler(async (req: Request, res: Response, n
       await EmailService.sendPasswordResetEmail(email, resetToken);
     } catch (emailError) {
       console.error('Error sending password reset email:', emailError);
-      return res.status(500).json({
+      res.status(500).json({
         success: false,
         error: 'Email service error',
         message: 'Failed to send password reset email'
       });
+      return;
     }
 
     res.json({
@@ -285,7 +330,7 @@ export const forgotPassword = asyncHandler(async (req: Request, res: Response, n
 });
 
 // Reset password
-export const resetPassword = asyncHandler(async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const resetPassword = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { token } = req.params;
     const { password } = req.body;
@@ -317,11 +362,12 @@ export const resetPassword = asyncHandler(async (req: Request, res: Response, ne
     });
 
     if (!user) {
-      return res.status(400).json({
+      res.status(400).json({
         success: false,
         error: 'Reset failed',
         message: 'Invalid or expired reset token'
       });
+      return;
     }
 
     // Set new password (hashing happens in the pre-save hook)
@@ -345,7 +391,7 @@ export const resetPassword = asyncHandler(async (req: Request, res: Response, ne
 });
 
 // Get current user
-export const getCurrentUser = asyncHandler(async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const getCurrentUser = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = req.user;
     
@@ -376,7 +422,7 @@ export const getCurrentUser = asyncHandler(async (req: Request, res: Response, n
 });
 
 // Resend verification email
-export const resendVerificationEmail = asyncHandler(async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+export const resendVerificationEmail = asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email } = req.body;
 
