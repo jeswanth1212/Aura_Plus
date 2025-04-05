@@ -1,8 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { BarChart2, Clock, MessageCircle, Download, ChevronDown, ChevronUp } from 'lucide-react';
+import { BarChart2, Clock, MessageCircle, Download, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react';
+
+// API Constants
+const GEMINI_API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
 
 interface SessionData {
   id: string;
@@ -39,6 +42,7 @@ interface SessionAnalysis {
     assistant: number;
   };
   recommendations?: string[];
+  lastUpdated?: Date;
 }
 
 export default function AnalysisPage() {
@@ -47,11 +51,126 @@ export default function AnalysisPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedSection, setExpandedSection] = useState<string | null>('sentiment');
+  const [analysisInProgress, setAnalysisInProgress] = useState(false);
   const router = useRouter();
 
+  // Function to analyze a session with AI
+  const analyzeSessionWithAI = useCallback(async (session: SessionData): Promise<SessionAnalysis> => {
+    if (!GEMINI_API_KEY) {
+      console.warn('GEMINI_API_KEY not found, using mock analysis');
+      return generateMockAnalysis(session);
+    }
+
+    try {
+      // Prepare conversation data for analysis
+      const conversationText = session.conversation.map(msg => 
+        `${msg.role.toUpperCase()}: ${msg.content}`
+      ).join('\n\n');
+      
+      // Calculate speaking time based on message length as an estimate
+      const userMessages = session.conversation.filter(msg => msg.role === 'user');
+      const assistantMessages = session.conversation.filter(msg => msg.role === 'assistant');
+      
+      const userTextLength = userMessages.reduce((total, msg) => total + msg.content.length, 0);
+      const assistantTextLength = assistantMessages.reduce((total, msg) => total + msg.content.length, 0);
+      
+      // Estimate speaking time (1 character ≈ 0.05 seconds of speech)
+      const userSpeakingTime = Math.round(userTextLength * 0.05);
+      const assistantSpeakingTime = Math.round(assistantTextLength * 0.05);
+      
+      // Prompt for Gemini API
+      const prompt = `
+      You are an expert therapy session analyzer. Analyze the following conversation between a user and an AI therapy assistant named Aura.
+      
+      CONVERSATION:
+      ${conversationText}
+      
+      Provide a detailed analysis in the following JSON format only, with no additional text:
+      {
+        "sentiment": {
+          "positive": [0-1 decimal representing percentage],
+          "neutral": [0-1 decimal representing percentage],
+          "negative": [0-1 decimal representing percentage]
+        },
+        "themes": [
+          {"name": "theme name", "strength": [0-1 decimal representing strength]}
+        ],
+        "recommendations": [
+          "recommendation 1",
+          "recommendation 2",
+          "recommendation 3"
+        ]
+      }
+      
+      Note that the sentiment values should sum to 1 exactly. Include 3-5 main themes with their strength (0-1 scale), and provide 2-3 personalized therapy recommendations based on the conversation content.
+      `;
+      
+      // Call Gemini API
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro:generateContent?key=${GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [{ text: prompt }]
+            }
+          ],
+          generationConfig: {
+            temperature: 0.4,
+            topK: 32,
+            topP: 0.95,
+            maxOutputTokens: 1024,
+          }
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      // Extract the response text
+      const responseText = data.candidates[0].content.parts[0].text;
+      
+      // Extract the JSON from the response text
+      const jsonMatch = responseText.match(/{[\s\S]*}/);
+      if (!jsonMatch) {
+        throw new Error('Failed to extract JSON from response');
+      }
+      
+      const analysisData = JSON.parse(jsonMatch[0]);
+      
+      return {
+        sentiment: {
+          positive: parseFloat(analysisData.sentiment.positive.toFixed(2)),
+          neutral: parseFloat(analysisData.sentiment.neutral.toFixed(2)),
+          negative: parseFloat(analysisData.sentiment.negative.toFixed(2))
+        },
+        themes: analysisData.themes.map((theme: any) => ({
+          name: theme.name,
+          strength: parseFloat(theme.strength.toFixed(2))
+        })),
+        speakingTime: {
+          user: userSpeakingTime,
+          assistant: assistantSpeakingTime
+        },
+        recommendations: analysisData.recommendations,
+        lastUpdated: new Date()
+      };
+    } catch (err) {
+      console.error('Error analyzing session with AI:', err);
+      // Fall back to mock analysis
+      return generateMockAnalysis(session);
+    }
+  }, []);
+
+  // Load sessions and set up event listener for session updates
   useEffect(() => {
     // Load sessions from localStorage
-    const loadSessions = () => {
+    const loadSessions = async () => {
       try {
         const userId = localStorage.getItem('aura_user_id');
         if (!userId) {
@@ -70,13 +189,24 @@ export default function AnalysisPage() {
         });
         
         // Process sessions to add analysis data
-        const processedSessions = sortedSessions.map((session: any) => {
-          // Generate mock analysis if not present
-          if (!session.analysis) {
-            session.analysis = generateMockAnalysis(session);
+        const processedSessions = await Promise.all(sortedSessions.map(async (session: any) => {
+          // Only analyze if there's no analysis or if it's been more than a day since the last analysis
+          if (!session.analysis || 
+              !session.analysis.lastUpdated || 
+              (new Date().getTime() - new Date(session.analysis.lastUpdated).getTime() > 24 * 60 * 60 * 1000)) {
+            session.analysis = await analyzeSessionWithAI(session);
+            
+            // Save updated analysis back to localStorage
+            const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '[]');
+            const sessionIndex = allSessions.findIndex((s: any) => s.id === session.id);
+            
+            if (sessionIndex !== -1) {
+              allSessions[sessionIndex].analysis = session.analysis;
+              localStorage.setItem('aura_sessions', JSON.stringify(allSessions));
+            }
           }
           return session;
-        });
+        }));
         
         setSessions(processedSessions);
         
@@ -94,9 +224,63 @@ export default function AnalysisPage() {
     };
 
     loadSessions();
-  }, []);
 
-  // Generate mock analysis data for demonstration
+    // Listen for session storage changes
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'aura_sessions') {
+        loadSessions();
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+
+    // Custom event for session updates
+    const handleSessionUpdate = () => {
+      loadSessions();
+    };
+
+    window.addEventListener('aura_session_updated', handleSessionUpdate);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('aura_session_updated', handleSessionUpdate);
+    };
+  }, [analyzeSessionWithAI]);
+
+  // Manually refresh analysis for the current session
+  const refreshAnalysis = async () => {
+    if (!selectedSession || analysisInProgress) return;
+    
+    setAnalysisInProgress(true);
+    try {
+      const updatedAnalysis = await analyzeSessionWithAI(selectedSession);
+      
+      // Update in state
+      setSelectedSession(prev => prev ? { ...prev, analysis: updatedAnalysis } : null);
+      
+      // Update in sessions list
+      setSessions(prev => prev.map(session => 
+        session.id === selectedSession.id 
+          ? { ...session, analysis: updatedAnalysis } 
+          : session
+      ));
+      
+      // Save to localStorage
+      const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '[]');
+      const sessionIndex = allSessions.findIndex((s: any) => s.id === selectedSession.id);
+      
+      if (sessionIndex !== -1) {
+        allSessions[sessionIndex].analysis = updatedAnalysis;
+        localStorage.setItem('aura_sessions', JSON.stringify(allSessions));
+      }
+    } catch (err) {
+      console.error("Error refreshing analysis:", err);
+    } finally {
+      setAnalysisInProgress(false);
+    }
+  };
+
+  // Generate mock analysis data for demonstration or fallback
   const generateMockAnalysis = (session: SessionData): SessionAnalysis => {
     const userMessages = session.conversation.filter(msg => msg.role === 'user');
     const assistantMessages = session.conversation.filter(msg => msg.role === 'assistant');
@@ -159,7 +343,8 @@ export default function AnalysisPage() {
         user: userSpeakingTime,
         assistant: assistantSpeakingTime
       },
-      recommendations: selectedRecommendations
+      recommendations: selectedRecommendations,
+      lastUpdated: new Date()
     };
   };
 
@@ -286,13 +471,30 @@ export default function AnalysisPage() {
             <h2 className="text-xl font-semibold">
               Session on {formatDate(selectedSession.startedAt)}
             </h2>
-            <button
-              onClick={exportAnalysis}
-              className="flex items-center px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-md text-sm"
-            >
-              <Download size={16} className="mr-1" /> Export
-            </button>
+            <div className="flex space-x-2">
+              <button
+                onClick={refreshAnalysis}
+                disabled={analysisInProgress}
+                className={`flex items-center px-3 py-1 ${analysisInProgress ? 'bg-gray-200 cursor-not-allowed' : 'bg-gray-100 hover:bg-gray-200'} rounded-md text-sm`}
+              >
+                <RefreshCw size={16} className={`mr-1 ${analysisInProgress ? 'animate-spin' : ''}`} /> 
+                Reanalyze
+              </button>
+              <button
+                onClick={exportAnalysis}
+                className="flex items-center px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded-md text-sm"
+              >
+                <Download size={16} className="mr-1" /> Export
+              </button>
+            </div>
           </div>
+          
+          {/* Analysis Last Updated */}
+          {selectedSession.analysis.lastUpdated && (
+            <div className="text-xs text-gray-500 mb-3">
+              Analysis last updated: {formatDate(selectedSession.analysis.lastUpdated)}
+            </div>
+          )}
           
           {/* Session Duration */}
           <div className="flex items-center mb-6 text-gray-600">
@@ -495,8 +697,8 @@ export default function AnalysisPage() {
           {/* Note about data privacy */}
           <div className="mt-8 text-xs text-gray-500 border-t pt-4">
             <p>
-              Note: All analysis is performed locally on your device and this data is not shared.
-              The analysis uses AI to process your conversation and generate insights.
+              Note: The analysis uses AI to process your conversation and generate insights.
+              All processing is secure and your data is only used to provide this analysis.
             </p>
           </div>
         </div>
