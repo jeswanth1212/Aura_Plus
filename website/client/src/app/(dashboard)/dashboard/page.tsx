@@ -890,8 +890,15 @@ export default function Dashboard() {
       const updatedHistory = [...conversationHistory, userMessage];
       setConversationHistory(updatedHistory);
       
-      // Save to storage
+      // Save user message to storage
       storageUtils.addMessageToSession(currentSessionId, userMessage);
+      
+      // Get updated session with the new user message
+      const updatedSession = storageUtils.getSession(currentSessionId);
+      if (!updatedSession) {
+        console.error('Session not found after adding user message');
+        return;
+      }
       
       // Step 2: Generate AI response
       console.log('🤖 STEP 2: Generating AI Response');
@@ -910,15 +917,34 @@ export default function Dashboard() {
       const finalHistory = [...updatedHistory, aiMessage];
       setConversationHistory(finalHistory);
       
-      // Save to storage immediately to ensure entire conversation is captured
+      // Save AI message to storage
       storageUtils.addMessageToSession(currentSessionId, aiMessage);
-      storageUtils.saveSession(currentSession);
+      
+      // Get final updated session after adding AI message
+      const finalSession = storageUtils.getSession(currentSessionId);
+      if (!finalSession) {
+        console.error('Session not found after adding AI message');
+        return;
+      }
+      
+      // Log the conversation size to verify it's being stored correctly
+      console.log(`💬 Conversation now has ${finalSession.conversation.length} messages`);
+      
+      // Double-check that the session is properly saved
+      storageUtils.saveSession(finalSession);
+      
+      // Explicitly save the session to localStorage again to be extra sure
+      const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
+      allSessions[currentSessionId] = finalSession;
+      localStorage.setItem('aura_sessions', JSON.stringify(allSessions));
+      console.log('📝 Explicitly saved updated session to localStorage');
       
       // Dispatch an event to notify other components that a session was updated
       const event = new CustomEvent('aura_session_updated', { 
         detail: { sessionId: currentSessionId }
       });
       window.dispatchEvent(event);
+      console.log('🔔 Dispatched session updated event');
       
       // Send the text response immediately to appear responsive
       console.log('📤 Showing immediate text response');
@@ -930,7 +956,7 @@ export default function Dashboard() {
       
       try {
         // Use the voice ID associated with this session
-        const audioData = await apiUtils.textToSpeech(aiResponse, currentSession.voiceId);
+        const audioData = await apiUtils.textToSpeech(aiResponse, finalSession.voiceId);
         
         // Clear processing state
         setIsProcessing(false);
@@ -948,7 +974,7 @@ export default function Dashboard() {
       }
       
       // Sync with backend if connected
-      apiUtils.syncWithBackend(currentSession);
+      apiUtils.syncWithBackend(finalSession);
     } catch (error) {
       console.error('❌ Error processing conversation:', error);
       setErrorMessage('Failed to process your message. Please try again.');

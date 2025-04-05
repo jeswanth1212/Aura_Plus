@@ -638,42 +638,83 @@ export default function AnalysisPage() {
     };
   }, []);
 
-  // Effect for loading sessions and setting up event listeners
+  // Add event listener for session updates from the dashboard
   useEffect(() => {
     // Load sessions initially
     loadSessions();
     
+    // Listen for custom events from dashboard
+    const handleSessionUpdate = (e: CustomEvent) => {
+      console.log('Session updated event received:', e.detail);
+      loadSessions();
+    };
+    
     // Listen for storage changes (for multi-tab support)
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'aura_sessions' || e.key?.startsWith('aura_user_sessions_')) {
+        console.log('Local storage changed, reloading sessions');
+        loadSessions();
+      }
+    };
+    
+    // Add event listeners
+    window.addEventListener('aura_session_updated', handleSessionUpdate as EventListener);
     window.addEventListener('storage', handleStorageChange);
     
-    // Listen for custom events from dashboard (same-tab updates)
-    window.addEventListener('aura_session_updated', handleSessionUpdate as EventListener);
-    
+    // Clean up event listeners on unmount
     return () => {
-      window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('aura_session_updated', handleSessionUpdate as EventListener);
+      window.removeEventListener('storage', handleStorageChange);
     };
   }, []);
-
-  // Handle storage events (for cross-tab updates)
-  const handleStorageChange = (e: StorageEvent) => {
-    if (e.key === 'aura_sessions' || e.key?.startsWith('aura_user_sessions_')) {
-      console.log('Local storage changed, reloading sessions');
-      loadSessions();
-    }
-  };
   
-  // Handle session update events from dashboard
-  const handleSessionUpdate = (e: CustomEvent) => {
-    console.log('Session updated event detected', e.detail);
-    loadSessions();
+  // Debug function to check session storage format
+  const debugSessionStorage = () => {
+    try {
+      const sessionsJson = localStorage.getItem('aura_sessions');
+      console.log('Raw aura_sessions from localStorage:', sessionsJson);
+      
+      const sessions = sessionsJson ? JSON.parse(sessionsJson) : {};
+      console.log('Parsed sessions:', sessions);
+      
+      // Check if it's in the expected object format
+      const isObjectFormat = typeof sessions === 'object' && !Array.isArray(sessions);
+      console.log('Is sessions in object format?', isObjectFormat);
+      
+      // Get user ID
+      const userId = localStorage.getItem('aura_user_id');
+      console.log('Current user ID:', userId);
+      
+      if (userId) {
+        const userSessionsJson = localStorage.getItem(`aura_user_sessions_${userId}`);
+        console.log(`Raw aura_user_sessions_${userId} from localStorage:`, userSessionsJson);
+        
+        const userSessions = userSessionsJson ? JSON.parse(userSessionsJson) : [];
+        console.log('User session IDs:', userSessions);
+        
+        // Check which of these sessions exist in the main sessions object
+        if (isObjectFormat && Array.isArray(userSessions)) {
+          userSessions.forEach(id => {
+            console.log(`Session ${id} exists in main sessions object:`, !!sessions[id]);
+          });
+        }
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('Error debugging session storage:', error);
+      return false;
+    }
   };
 
   // Function to load sessions from localStorage
-  const loadSessions = useCallback(async () => {
+  const loadSessions = async () => {
     try {
       setIsLoading(true);
       setError(null);
+      
+      // Debug session storage to identify issues
+      debugSessionStorage();
       
       // Get user ID from localStorage
       const userId = localStorage.getItem('aura_user_id');
@@ -686,69 +727,96 @@ export default function AnalysisPage() {
       }
       
       // Get session data from localStorage
-      // First try to get user's session IDs
-      const userSessionsJson = localStorage.getItem(`aura_user_sessions_${userId}`);
-      let userSessionIds: string[] = [];
-      
-      if (userSessionsJson) {
-        userSessionIds = JSON.parse(userSessionsJson);
-      }
-      
-      // Get all sessions from localStorage
       const sessionsJson = localStorage.getItem('aura_sessions');
       let allSessions: Record<string, any> = {};
       
       if (sessionsJson) {
-        allSessions = JSON.parse(sessionsJson);
+        try {
+          allSessions = JSON.parse(sessionsJson);
+          // Verify sessions is not an array (old format)
+          if (Array.isArray(allSessions)) {
+            console.warn('Sessions in old array format, converting to object format');
+            const sessionsObj: Record<string, any> = {};
+            allSessions.forEach(session => {
+              if (session.id) {
+                sessionsObj[session.id] = session;
+              }
+            });
+            allSessions = sessionsObj;
+          }
+        } catch (parseError) {
+          console.error('Failed to parse sessions JSON:', parseError);
+          // Create empty object if parse fails
+          allSessions = {};
+        }
       }
       
-      // If no sessions found, create sample data
+      // Get the list of session IDs for this user
+      const userSessionsJson = localStorage.getItem(`aura_user_sessions_${userId}`);
+      let userSessionIds: string[] = [];
+      
+      if (userSessionsJson) {
+        try {
+          userSessionIds = JSON.parse(userSessionsJson);
+          if (!Array.isArray(userSessionIds)) {
+            console.warn('User session IDs not in array format, resetting');
+            userSessionIds = [];
+          }
+        } catch (parseError) {
+          console.error('Failed to parse user sessions JSON:', parseError);
+          userSessionIds = [];
+        }
+      }
+      
+      // If there are no sessions, create sample data
       if (Object.keys(allSessions).length === 0 || userSessionIds.length === 0) {
         console.log("No sessions found, creating sample data");
         createSampleSessions();
         
-        // Reload sessions after creating samples
+        // Re-fetch sessions after creating samples
         const newSessionsJson = localStorage.getItem('aura_sessions');
         const newUserSessionsJson = localStorage.getItem(`aura_user_sessions_${userId}`);
         
         if (newSessionsJson && newUserSessionsJson) {
           allSessions = JSON.parse(newSessionsJson);
           userSessionIds = JSON.parse(newUserSessionsJson);
-        } else {
-          setError("Failed to create sample sessions");
-          setIsLoading(false);
-          return;
         }
       }
       
-      // Get session objects from IDs, processing date strings into Date objects
-      let loadedSessions = userSessionIds
-        .map(id => allSessions[id])
-        .filter(Boolean)
-        .map(session => ({
-          ...session,
-          startedAt: new Date(session.startedAt),
-          endedAt: session.endedAt ? new Date(session.endedAt) : undefined,
-          conversation: session.conversation.map((msg: any) => ({
-            ...msg,
-            timestamp: new Date(msg.timestamp)
-          }))
-        }));
+      // Get sessions either from user session IDs or by filtering all sessions
+      let loadedSessions: SessionData[] = [];
       
-      // Sort sessions by start date (newest first)
+      if (userSessionIds.length > 0) {
+        // Get sessions by ID from the master sessions object
+        loadedSessions = userSessionIds
+          .map(id => allSessions[id])
+          .filter(Boolean) // Remove any null/undefined entries
+          .map(processSessionDates); // Process dates
+        console.log(`Loaded ${loadedSessions.length} sessions from user session IDs`);
+      } else {
+        // Fallback to filtering by user ID
+        loadedSessions = Object.values(allSessions)
+          .filter((session: any) => session.userId === userId)
+          .map(processSessionDates);
+        console.log(`Loaded ${loadedSessions.length} sessions by filtering for user ID`);
+      }
+      
+      // Sort by most recent first
       loadedSessions.sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime());
       
-      console.log(`Loaded ${loadedSessions.length} sessions`);
+      console.log(`Successfully loaded ${loadedSessions.length} sessions for analysis`);
       setSessions(loadedSessions);
       
-      // If there are sessions, analyze them
+      // If there are sessions, set the first one as selected
+      if (loadedSessions.length > 0 && !selectedSession) {
+        setSelectedSession(loadedSessions[0]);
+      }
+      
+      // Generate analysis for sessions that don't have it yet
       if (loadedSessions.length > 0) {
-        // Generate analysis for sessions that don't have it yet
-        refreshAnalysis();
-        
-        // Generate aggregate analysis from all sessions
-        const aggregate = generateAggregateAnalysis(loadedSessions);
-        setAggregateAnalysis(aggregate);
+        setTimeout(() => {
+          refreshAnalysis();
+        }, 300);
       }
       
       setIsLoading(false);
@@ -757,7 +825,31 @@ export default function AnalysisPage() {
       setError(`Error loading sessions: ${loadError.message || "Unknown error"}`);
       setIsLoading(false);
     }
-  }, []);
+  };
+  
+  // Helper function to process dates in session data
+  const processSessionDates = (session: any): SessionData => {
+    try {
+      return {
+        ...session,
+        startedAt: new Date(session.startedAt),
+        endedAt: session.endedAt ? new Date(session.endedAt) : undefined,
+        conversation: Array.isArray(session.conversation) ? session.conversation.map((msg: any) => ({
+          ...msg,
+          timestamp: new Date(msg.timestamp)
+        })) : []
+      };
+    } catch (error) {
+      console.error("Error processing session dates:", error, session);
+      // Return a minimally valid session
+      return {
+        id: session.id || 'invalid-id',
+        userId: session.userId || null,
+        startedAt: new Date(),
+        conversation: []
+      };
+    }
+  };
 
   // Manually refresh analysis for the current session
   const refreshAnalysis = async () => {
