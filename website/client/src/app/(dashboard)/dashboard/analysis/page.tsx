@@ -54,6 +54,122 @@ export default function AnalysisPage() {
   const [analysisInProgress, setAnalysisInProgress] = useState(false);
   const router = useRouter();
 
+  // Create sample sessions if none exist
+  const createSampleSessions = useCallback(() => {
+    // Generate a mock user ID if none exists
+    let userId = localStorage.getItem('aura_user_id');
+    if (!userId) {
+      userId = `user-${Math.random().toString(36).substring(2, 9)}`;
+      localStorage.setItem('aura_user_id', userId);
+    }
+
+    // Create sample therapy conversations
+    const sampleSessions: SessionData[] = [
+      {
+        id: `session-${Date.now()}-1`,
+        userId,
+        startedAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000), // 3 days ago
+        endedAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000 + 30 * 60 * 1000), // 30 min session
+        voiceId: 'sample-voice-1',
+        conversation: [
+          {
+            role: 'assistant',
+            content: 'Hello! I\'m Aura, your AI therapy assistant. How are you feeling today?',
+            timestamp: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)
+          },
+          {
+            role: 'user',
+            content: 'I\'ve been feeling anxious lately, especially with work deadlines coming up.',
+            timestamp: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000 + 5 * 1000)
+          },
+          {
+            role: 'assistant',
+            content: 'I understand. Work pressure can be overwhelming. Can you tell me more about these deadlines and how they\'re affecting you?',
+            timestamp: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000 + 10 * 1000)
+          },
+          {
+            role: 'user',
+            content: 'I have three major projects due next week and I\'m worried I won\'t be able to complete them on time. I\'ve been having trouble sleeping and it\'s hard to focus.',
+            timestamp: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000 + 20 * 1000)
+          },
+          {
+            role: 'assistant',
+            content: 'That sounds challenging. Sleep issues and difficulty focusing are common responses to stress. Have you tried breaking down these projects into smaller, manageable tasks?',
+            timestamp: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000 + 25 * 1000)
+          },
+          {
+            role: 'user',
+            content: 'I haven\'t really. I just see them as these huge mountains I need to climb and it feels overwhelming.',
+            timestamp: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000 + 35 * 1000)
+          },
+          {
+            role: 'assistant',
+            content: 'Breaking large tasks into smaller ones can make them feel more manageable. Perhaps we could discuss some stress management techniques that might help you sleep better too?',
+            timestamp: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000 + 40 * 1000)
+          }
+        ]
+      },
+      {
+        id: `session-${Date.now()}-2`,
+        userId,
+        startedAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000), // 1 day ago
+        endedAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000 + 45 * 60 * 1000), // 45 min session
+        voiceId: 'sample-voice-2',
+        conversation: [
+          {
+            role: 'assistant',
+            content: 'Welcome back! How have you been since our last session?',
+            timestamp: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000)
+          },
+          {
+            role: 'user',
+            content: 'I\'ve been a bit better. I tried breaking down one of my projects like you suggested, and it helped me get started.',
+            timestamp: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000 + 10 * 1000)
+          },
+          {
+            role: 'assistant',
+            content: 'That\'s great progress! How did it feel to approach your work that way?',
+            timestamp: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000 + 15 * 1000)
+          },
+          {
+            role: 'user',
+            content: 'It was less intimidating. I still feel stressed, but at least I\'ve made some progress. My sleep is still not great though.',
+            timestamp: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000 + 25 * 1000)
+          },
+          {
+            role: 'assistant',
+            content: 'I\'m glad you found it helpful. Sleep disturbances can take longer to resolve. Would you like to explore some relaxation techniques that might help with your sleep?',
+            timestamp: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000 + 30 * 1000)
+          },
+          {
+            role: 'user',
+            content: 'Yes, that would be really helpful. I\'ve tried some breathing exercises, but they don\'t seem to help much.',
+            timestamp: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000 + 40 * 1000)
+          },
+          {
+            role: 'assistant',
+            content: 'Different techniques work for different people. Progressive muscle relaxation might be a good alternative. It involves tensing and then relaxing each muscle group in your body, which can help release physical tension that contributes to anxiety and sleep problems.',
+            timestamp: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000 + 50 * 1000)
+          },
+          {
+            role: 'user',
+            content: 'That sounds interesting. I\'ll try that tonight and see if it helps. I also wanted to talk about my communication with my team. I think I need to be more open about my workload.',
+            timestamp: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000 + 60 * 1000)
+          },
+          {
+            role: 'assistant',
+            content: 'Opening up about your workload is a great step. Clear communication can help set realistic expectations and might even lead to better distribution of tasks. What's been holding you back from discussing this with your team?',
+            timestamp: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000 + 70 * 1000)
+          }
+        ]
+      }
+    ];
+
+    // Save to localStorage
+    localStorage.setItem('aura_sessions', JSON.stringify(sampleSessions));
+    return sampleSessions;
+  }, []);
+
   // Function to analyze a session with AI
   const analyzeSessionWithAI = useCallback(async (session: SessionData): Promise<SessionAnalysis> => {
     if (!GEMINI_API_KEY) {
@@ -173,15 +289,18 @@ export default function AnalysisPage() {
     const loadSessions = async () => {
       try {
         const userId = localStorage.getItem('aura_user_id');
-        if (!userId) {
-          setError('User not authenticated');
-          setIsLoading(false);
-          return;
-        }
-
+        
         // Get all sessions for the user
-        const storedSessions = JSON.parse(localStorage.getItem('aura_sessions') || '[]');
-        const userSessions = storedSessions.filter((s: any) => s.userId === userId);
+        let storedSessions = JSON.parse(localStorage.getItem('aura_sessions') || '[]');
+        let userSessions = storedSessions.filter((s: any) => s.userId === userId);
+        
+        // If no sessions exist or user has no sessions, create sample data
+        if (storedSessions.length === 0 || userSessions.length === 0) {
+          console.log('No sessions found, creating sample data');
+          const sampleSessions = createSampleSessions();
+          userSessions = sampleSessions;
+          storedSessions = sampleSessions;
+        }
         
         // Sort by startedAt (most recent first)
         const sortedSessions = userSessions.sort((a: any, b: any) => {
@@ -245,7 +364,7 @@ export default function AnalysisPage() {
       window.removeEventListener('storage', handleStorageChange);
       window.removeEventListener('aura_session_updated', handleSessionUpdate);
     };
-  }, [analyzeSessionWithAI]);
+  }, [analyzeSessionWithAI, createSampleSessions]);
 
   // Manually refresh analysis for the current session
   const refreshAnalysis = async () => {
