@@ -1,35 +1,10 @@
 'use client';
 
-import React, { use, useEffect, useReducer, useRef, useState, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Mic, MicOff, X, Play, History, BarChart2 } from 'lucide-react';
 import TypingAnimation from '@/components/TypingAnimation';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-
-// Create a mock ZyphraClient if the real one isn't available
-let ZyphraClient;
-try {
-  const dynamicImport = require('@zyphra/client');
-  ZyphraClient = dynamicImport.ZyphraClient;
-} catch (error) {
-  console.warn('Warning: @zyphra/client package not found. Voice cloning with Zyphra will be disabled.');
-  // Create a mock client that will gracefully fail
-  ZyphraClient = class MockZyphraClient {
-    constructor() {
-      console.warn('Zyphra client is not available. Using fallback voice.');
-    }
-    
-    audio = {
-      speech: {
-        create: async () => {
-          console.warn('Zyphra TTS not available. Returning empty audio.');
-          // Return an empty audio blob that can be converted to ArrayBuffer
-          return new Blob([], { type: 'audio/mpeg' });
-        }
-      }
-    }
-  };
-}
 
 // Conversation states
 enum ConversationState {
@@ -83,47 +58,97 @@ const stateMessages = {
 
 // API utility functions
 const apiUtils = {
-  // Voice Cloning with Zyphra
+  // Voice Cloning with Zyphra (replacing ElevenLabs)
   async cloneVoice(name: string): Promise<string> {
     try {
-      console.log('🎭 Cloning voice with name:', name);
+      console.log('Attempting to clone voice with Zyphra:', name);
       
-      // Get Zyphra API key
-      const ZYPHRA_API_KEY = process.env.NEXT_PUBLIC_ZYPHRA_API_KEY;
-      if (!ZYPHRA_API_KEY) {
-        throw new Error('ZYPHRA_API_KEY not configured');
+      // Import zyphraService
+      const zyphraService = (await import('../../../services/zyphraService')).default;
+      
+      // Check if Zyphra service is initialized
+      if (!zyphraService.isInitialized()) {
+        console.warn('Zyphra service not initialized, falling back to ElevenLabs');
+        return this.fallbackToElevenLabsClone(name);
       }
       
-      // Create Zyphra client instance
-      const client = new ZyphraClient({ apiKey: ZYPHRA_API_KEY });
+      // Generate a voice ID for this cloned voice
+      const voiceId = `zyphra_${Date.now()}_${name}`;
       
-      // According to the documentation, Zyphra doesn't have a separate voice cloning
-      // endpoint - instead, you provide a speaker_audio with each TTS request.
-      // For now, we'll just set the flag to use Zyphra for the next session,
-      // and the actual voice clone will need to be provided when making the TTS request.
-      
-      // Set the flag to use Zyphra for the next session
-      localStorage.setItem('aura_use_zyphra_next_session', 'true');
-      
-      // Generate a placeholder voice ID 
-      const voiceId = `zyphra_${name}_${Date.now()}`;
-      
-      console.log('✅ Prepared for Zyphra voice usage:', voiceId);
-      
-      // Save a placeholder voice entry to localStorage
+      // Save the voice ID in localStorage
       const savedVoices = JSON.parse(localStorage.getItem('aura_cloned_voices') || '[]');
       savedVoices.push({
         id: voiceId,
         name: `Aura Session ${name}`,
-        createdAt: new Date().toISOString(),
-        provider: 'zyphra'
+        type: 'zyphra', // Mark this as a Zyphra voice
+        createdAt: new Date().toISOString()
       });
       localStorage.setItem('aura_cloned_voices', JSON.stringify(savedVoices));
       
+      console.log('✅ Successfully created voice reference with Zyphra ID:', voiceId);
       return voiceId;
     } catch (error) {
-      console.error('❌ Error setting up Zyphra voice:', error);
-      throw error;
+      console.error('❌ Error in Zyphra voice cloning:', error);
+      // Fallback to ElevenLabs if Zyphra fails
+      return this.fallbackToElevenLabsClone(name);
+    }
+  },
+  
+  // Fallback to ElevenLabs voice cloning
+  async fallbackToElevenLabsClone(name: string): Promise<string> {
+    try {
+      console.log('🔄 Falling back to ElevenLabs voice cloning for:', name);
+      
+      if (!ELEVENLABS_API_KEY) {
+        throw new Error('ELEVENLABS_API_KEY not configured');
+      }
+      
+      // Sample text for voice cloning
+      const sampleText = "I'm your AI therapy companion, here to help you explore your thoughts and feelings in a safe, supportive environment.";
+      
+      // Create a voice with instant voice cloning (no samples needed)
+      const response = await fetch('https://api.elevenlabs.io/v1/voices/add', {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'xi-api-key': ELEVENLABS_API_KEY
+        },
+        body: JSON.stringify({
+          name: `Aura Session ${name}`,
+          description: "AI therapist voice for Aura Plus session",
+          text_sample: sampleText,
+          voice_model_id: "eleven_multilingual_v2"
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Voice cloning error: ${response.status} ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      if (!data || !data.voice_id) {
+        throw new Error('Invalid response from voice cloning API');
+      }
+      
+      // Save this as an ElevenLabs voice type
+      const savedVoices = JSON.parse(localStorage.getItem('aura_cloned_voices') || '[]');
+      savedVoices.push({
+        id: data.voice_id,
+        name: `Aura Session ${name}`,
+        type: 'elevenlabs',
+        createdAt: new Date().toISOString()
+      });
+      localStorage.setItem('aura_cloned_voices', JSON.stringify(savedVoices));
+      
+      console.log('✅ Successfully cloned voice with ElevenLabs ID:', data.voice_id);
+      
+      return data.voice_id;
+    } catch (error) {
+      console.error('❌ Error in ElevenLabs voice cloning:', error);
+      // Return default voice ID if cloning fails
+      return DEFAULT_VOICE_ID;
     }
   },
   
@@ -297,112 +322,15 @@ The client context is: ${userContext}`
     }
   },
   
-  // Text-to-Speech service selector
+  // ElevenLabs Text-to-Speech
   async textToSpeech(text: string, voiceId: string = DEFAULT_VOICE_ID): Promise<ArrayBuffer> {
-    // Check if we should use Zyphra for this session
-    const useZyphra = localStorage.getItem('aura_use_zyphra_next_session') === 'true';
-    
-    if (useZyphra) {
-      try {
-        return await this.zyphraTTS(text, voiceId);
-      } catch (error) {
-        console.error('❌ Error using Zyphra TTS, falling back to ElevenLabs:', error);
-        // Fall back to ElevenLabs on error
-        return await this.elevenLabsTTS(text, voiceId);
-      }
-    } else {
-      // Use default ElevenLabs TTS
-      return await this.elevenLabsTTS(text, voiceId);
-    }
-  },
-  
-  // Zyphra Text-to-Speech implementation
-  async zyphraTTS(text: string, voiceId: string): Promise<ArrayBuffer> {
     try {
-      console.log('🎵 Converting text to speech using Zyphra');
+      console.log('🎵 Converting text to speech using voice ID:', voiceId);
       
-      // Get Zyphra API key from environment variables
-      const ZYPHRA_API_KEY = process.env.NEXT_PUBLIC_ZYPHRA_API_KEY;
-      if (!ZYPHRA_API_KEY) {
-        throw new Error('ZYPHRA_API_KEY not configured in environment variables');
+      // Check if this is a Zyphra voice ID (they start with "zyphra_")
+      if (voiceId.startsWith('zyphra_')) {
+        return this.zyphraTextToSpeech(text, voiceId);
       }
-      
-      // Create a Zyphra client instance
-      const client = new ZyphraClient({ apiKey: ZYPHRA_API_KEY });
-      
-      // Parameters for TTS
-      const params: any = {
-        text: text,
-        speaking_rate: 15,
-        model: 'zonos-v0.1-transformer'
-      };
-      
-      // Look for saved Zyphra voices
-      try {
-        const savedVoices = JSON.parse(localStorage.getItem('aura_cloned_voices') || '[]');
-        
-        // Find the most recent Zyphra voice
-        const zyphraVoices = savedVoices.filter((voice: any) => voice.provider === 'zyphra');
-        
-        if (zyphraVoices.length > 0) {
-          // Sort by creation date (newest first)
-          const sortedVoices = [...zyphraVoices].sort((a: any, b: any) => 
-            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-          );
-          
-          // Use the most recent one
-          const latestVoice = sortedVoices[0];
-          
-          if (latestVoice && latestVoice.id) {
-            console.log('✅ Using cloned Zyphra voice:', latestVoice.name);
-            
-            // Use the saved base64 audio directly as speaker_audio
-            params.speaker_audio = latestVoice.id;
-            console.log('📊 Using voice data from saved profile');
-          } else {
-            console.log('⚠️ No valid Zyphra voice found, using default voice parameters');
-          }
-        } else {
-          console.log('⚠️ No Zyphra voices found in local storage');
-        }
-      } catch (error) {
-        console.error('❌ Error retrieving saved voices:', error);
-      }
-      
-      // Log the request (excluding the full base64 data for brevity)
-      console.log('🔄 Making Zyphra TTS request with parameters:', {
-        ...params,
-        speaker_audio: params.speaker_audio ? '[BASE64_AUDIO_DATA]' : 'none'
-      });
-      
-      // Use the Zyphra client directly
-      const audioBlob = await client.audio.speech.create(params);
-      
-      // Convert Blob to ArrayBuffer
-      const audioData = await audioBlob.arrayBuffer();
-      
-      console.log('✅ Successfully converted text to speech with Zyphra');
-      
-      return audioData;
-    } catch (error) {
-      console.error('❌ Error in Zyphra text-to-speech conversion:', error);
-      throw error;
-    }
-  },
-  
-  // Helper method to validate base64 strings
-  isValidBase64(str: string): boolean {
-    if (typeof str !== 'string') return false;
-    if (str.length === 0) return false;
-    
-    // Simple regex for base64 validation
-    return /^[A-Za-z0-9+/=]+$/.test(str);
-  },
-  
-  // Original ElevenLabs Text-to-Speech implementation
-  async elevenLabsTTS(text: string, voiceId: string = DEFAULT_VOICE_ID): Promise<ArrayBuffer> {
-    try {
-      console.log('🎵 Converting text to speech using ElevenLabs with voice ID:', voiceId);
       
       // Improved text processing for TTS
       // Split long text into chunks of up to 250 characters at sentence boundaries
@@ -441,8 +369,69 @@ The client context is: ${userContext}`
       
       return audioData;
     } catch (error) {
-      console.error('❌ Error in ElevenLabs text-to-speech conversion:', error);
+      console.error('❌ Error in text-to-speech conversion:', error);
       throw error;
+    }
+  },
+  
+  // Zyphra Text-to-Speech implementation
+  async zyphraTextToSpeech(text: string, voiceId: string): Promise<ArrayBuffer> {
+    try {
+      console.log('🎵 Converting text to speech using Zyphra voice ID:', voiceId);
+      
+      // Import zyphraService
+      const zyphraService = (await import('../../../services/zyphraService')).default;
+      
+      // Simplified approach: Always process Zyphra voices without session checks
+      console.log('Using Zyphra for cloned voice TTS');
+      
+      // Check if Zyphra service is initialized
+      if (!zyphraService.isInitialized()) {
+        console.warn('Zyphra service not initialized, falling back to ElevenLabs');
+        // Use default voice ID since we couldn't use Zyphra
+        return this.textToSpeech(text, DEFAULT_VOICE_ID);
+      }
+      
+      // Get all cloned voices to find the reference audio
+      const savedVoices = JSON.parse(localStorage.getItem('aura_cloned_voices') || '[]');
+      const voiceData = savedVoices.find((v: any) => v.id === voiceId);
+      
+      if (!voiceData) {
+        console.warn('Voice data not found for:', voiceId, 'falling back to default voice');
+        return this.textToSpeech(text, DEFAULT_VOICE_ID);
+      }
+      
+      let audioBlob: Blob;
+      
+      // Check if we have a saved reference audio for this voice
+      const savedAudio = localStorage.getItem(`zyphra_audio_${voiceId}`);
+      if (savedAudio) {
+        // Use the saved audio reference with the voice ID as session ID
+        try {
+          console.log(`Generating Zyphra TTS with voice ${voiceId}`);
+          audioBlob = await zyphraService.generateSpeechWithSavedVoice(text, savedAudio, voiceId);
+          console.log('Zyphra TTS successful, blob size:', audioBlob.size, 'bytes');
+        } catch (error) {
+          console.error('Zyphra TTS failed:', error);
+          console.log('Falling back to ElevenLabs TTS');
+          return this.textToSpeech(text, DEFAULT_VOICE_ID);
+        }
+      } else {
+        // If we don't have reference audio yet, use a default voice
+        console.warn('No reference audio for voice:', voiceId, 'using default TTS');
+        return this.textToSpeech(text, DEFAULT_VOICE_ID);
+      }
+      
+      // Convert blob to ArrayBuffer for consistent return type
+      const arrayBuffer = await new Response(audioBlob).arrayBuffer();
+      console.log('✅ Successfully converted text to speech with Zyphra');
+      
+      return arrayBuffer;
+    } catch (error) {
+      console.error('❌ Error in Zyphra text-to-speech conversion:', error);
+      // Fall back to ElevenLabs with default voice
+      console.warn('Falling back to ElevenLabs TTS due to error');
+      return this.textToSpeech(text, DEFAULT_VOICE_ID);
     }
   },
   
@@ -745,14 +734,89 @@ const initGemini = () => {
   return new GoogleGenerativeAI(apiKey);
 };
 
-// Generate speech from text using ElevenLabs API
-const generateSpeech = async (text: string, voiceId?: string): Promise<string> => {
+// Generate speech from text using ElevenLabs API or Zyphra
+const generateSpeech = async (text: string, voiceId?: string, sessionId?: string): Promise<string> => {
   try {
+    const voice = voiceId || DEFAULT_VOICE_ID; // Default voice if none provided
+    console.log('Generating speech for voice ID:', voice, 'in session:', sessionId);
+    
+    // Use Zyphra only for voice IDs that start with "zyphra_"
+    if (voice.startsWith('zyphra_')) {
+      try {
+        // Import zyphraService
+        const zyphraService = (await import('../../../services/zyphraService')).default;
+        
+        console.log('🎵 Using Zyphra for cloned voice TTS');
+        
+        // Check if Zyphra service is initialized
+        if (!zyphraService.isInitialized()) {
+          console.warn('Zyphra service not initialized, falling back to ElevenLabs');
+          return generateSpeechWithElevenLabs(text, DEFAULT_VOICE_ID);
+        }
+        
+        // Get the saved reference audio for this voice
+        const savedAudio = localStorage.getItem(`zyphra_audio_${voice}`);
+        if (!savedAudio) {
+          console.warn('No reference audio found for voice:', voice, 'falling back to ElevenLabs');
+          return generateSpeechWithElevenLabs(text, DEFAULT_VOICE_ID);
+        }
+        
+        console.log(`Found reference audio for ${voice}, length: ${savedAudio.length} characters`);
+        
+        // Generate speech with Zyphra
+        try {
+          console.time('zyphraGeneration');
+          // Simplified: Use voice ID as session ID to avoid complex session tracking
+          const audioBlob = await zyphraService.generateSpeechWithSavedVoice(text, savedAudio, voice);
+          console.timeEnd('zyphraGeneration');
+          
+          // Verify the blob is valid
+          if (!audioBlob || audioBlob.size < 50) {
+            console.warn('Zyphra returned too small audio blob:', audioBlob?.size, 'bytes');
+            return generateSpeechWithElevenLabs(text, DEFAULT_VOICE_ID);
+          }
+          
+          // Convert to URL for audio playback
+          console.log('Creating blob URL for Zyphra audio, size:', audioBlob.size, 'bytes');
+          const audioUrl = URL.createObjectURL(audioBlob);
+          console.log('✅ Zyphra audio URL created:', audioUrl);
+          return audioUrl;
+        } catch (zyphraError) {
+          console.error('Error generating speech with Zyphra:', zyphraError);
+          console.log('Falling back to ElevenLabs');
+          return generateSpeechWithElevenLabs(text, DEFAULT_VOICE_ID);
+        }
+      } catch (error) {
+        console.error('Error in Zyphra setup:', error);
+        return generateSpeechWithElevenLabs(text, DEFAULT_VOICE_ID);
+      }
+    } else {
+      // Use ElevenLabs for all other voice IDs
+      return generateSpeechWithElevenLabs(text, voice);
+    }
+  } catch (error) {
+    console.error('Error in generateSpeech:', error);
+    
+    // Return an empty audio as a last resort
+    return 'data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//uQZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAAGAAABkABUVFRUVFRUVFRUVFRUVFSlpaWlpaWlpaWlpaWlpaXp6enp6enp6enp6enp6en/////////////////////AAAAAAE==';
+  }
+};
+
+// Use ElevenLabs for TTS
+const generateSpeechWithElevenLabs = async (text: string, voiceId: string): Promise<string> => {
+  try {
+    console.log('🎵 Generating speech with ElevenLabs voice:', voiceId);
+    
     // In a real implementation, use environment variable for the API key
     const apiKey = process.env.NEXT_PUBLIC_ELEVENLABS_API_KEY || '';
-    const voice = voiceId || 'EXAVITQu4vr4xnSDxMaL'; // Default voice if none provided
     
-    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice}`, {
+    if (!apiKey) {
+      console.error('ElevenLabs API key not found');
+      throw new Error('ElevenLabs API key missing');
+    }
+    
+    console.time('elevenLabsGeneration');
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -769,17 +833,25 @@ const generateSpeech = async (text: string, voiceId?: string): Promise<string> =
         }
       })
     });
+    console.timeEnd('elevenLabsGeneration');
     
     if (!response.ok) {
       throw new Error(`Speech generation failed: ${response.status}`);
     }
     
     const audioBuffer = await response.arrayBuffer();
+    console.log('ElevenLabs returned audio size:', audioBuffer.byteLength, 'bytes');
+    
     const audioBlob = new Blob([audioBuffer], { type: 'audio/mpeg' });
-    return URL.createObjectURL(audioBlob);
+    const audioUrl = URL.createObjectURL(audioBlob);
+    console.log('✅ ElevenLabs audio URL created:', audioUrl);
+    
+    return audioUrl;
   } catch (error) {
-    console.error('Error generating speech:', error);
-    throw error;
+    console.error('Error generating speech with ElevenLabs:', error);
+    
+    // Return a minimal valid audio as a last resort
+    return 'data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//uQZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAAGAAABkABUVFRUVFRUVFRUVFRUVFSlpaWlpaWlpaWlpaWlpaXp6enp6enp6enp6enp6en/////////////////////AAAAAAE==';
   }
 };
 
@@ -804,7 +876,6 @@ export default function Dashboard() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const socketRef = useRef<any>(null);
 
   // Check server availability on load
   useEffect(() => {
@@ -854,16 +925,81 @@ export default function Dashboard() {
   useEffect(() => {
     audioRef.current = new Audio();
     
+    // Listen for voice cloning events to update current session
+    const handleVoiceCloned = (event: any) => {
+      const detail = event.detail || {};
+      const voiceId = detail.voiceId;
+      const sessionId = detail.sessionId;
+      
+      console.log('🎭 Voice cloned event detected:', detail);
+      
+      if (!voiceId) {
+        console.warn('Voice cloned event missing voiceId');
+        return;
+      }
+      
+      // Handle current session update
+      if (currentSessionId) {
+        console.log('Current session ID:', currentSessionId, 'Event session ID:', sessionId);
+        
+        // Update current session with new voice ID
+        const session = storageUtils.getSession(currentSessionId);
+        if (session) {
+          console.log('Updating current session to use newly cloned voice:', voiceId);
+          
+          // Update session object
+          session.voiceId = voiceId;
+          storageUtils.saveSession(session);
+          
+          // Double check the update
+          const updatedSession = storageUtils.getSession(currentSessionId);
+          console.log('Verified session voice ID after update:', updatedSession?.voiceId);
+          
+          // Provide user feedback
+          const feedback = "Voice cloned successfully! Your digital therapist will now use your cloned voice.";
+          setTextResponse(feedback);
+          
+          // Generate a spoken confirmation using the new voice
+          if (!isAISpeaking && !isProcessing) {
+            console.log('Generating speech confirmation with new voice');
+            setIsProcessing(true); // Prevent multiple confirmations
+            
+            generateSpeech(feedback, voiceId, sessionId)
+              .then(audioUrl => {
+                console.log('Generated confirmation audio URL:', audioUrl);
+                playAudio(audioUrl, feedback);
+              })
+              .catch(error => {
+                console.error('Error generating speech with new voice:', error);
+                setIsProcessing(false);
+              });
+          } else {
+            console.log('Not generating speech confirmation - AI is already speaking or processing');
+          }
+        } else {
+          console.warn('Unable to find current session to update');
+        }
+      } else {
+        console.log('No active session to update with cloned voice');
+      }
+    };
+    
+    // Add the event listener
+    window.addEventListener('voice_cloned', handleVoiceCloned);
+    
     // Cleanup function
     return () => {
       cleanupAudioResources();
+      
+      // Remove the event listener
+      window.removeEventListener('voice_cloned', handleVoiceCloned);
       
       // End current session if active
       if (currentSessionId) {
         storageUtils.endSession(currentSessionId);
       }
     };
-  }, [currentSessionId]);
+  }, [currentSessionId, isAISpeaking, isProcessing]);
 
   // Begin the conversation session
   const beginSession = async () => {
@@ -877,68 +1013,44 @@ export default function Dashboard() {
       
       // Check if there are any cloned voices available
       let sessionVoiceId = DEFAULT_VOICE_ID;
-      let isZyphraVoice = false;
-      
       try {
-        // CRITICAL: Check for cloned voices, with better logging
-        console.log('🔍 Checking for cloned voices...');
-        
-        // Get saved voices from localStorage
         const savedVoices = JSON.parse(localStorage.getItem('aura_cloned_voices') || '[]');
-        console.log(`📊 Found ${savedVoices.length} saved voices`);
         
         // If we have saved voices, use the most recent one
         if (savedVoices.length > 0) {
           // Sort by creation date (newest first)
-          const sortedVoices = [...savedVoices].sort((a, b) => 
+          savedVoices.sort((a: any, b: any) => 
             new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
           );
           
-          const mostRecentVoice = sortedVoices[0];
-          console.log('🎤 Most recent voice:', {
-            name: mostRecentVoice.name,
-            provider: mostRecentVoice.provider,
-            createdAt: mostRecentVoice.createdAt
-          });
+          // Use the most recent voice
+          sessionVoiceId = savedVoices[0].id;
+          console.log('Using previously cloned voice:', savedVoices[0].name, sessionVoiceId);
           
-          // Check if it's a Zyphra voice
-          if (mostRecentVoice.provider === 'zyphra') {
-            console.log('🎤 Using Zyphra voice:', mostRecentVoice.name);
-            // For Zyphra, we need to set this flag
-            localStorage.setItem('aura_use_zyphra_next_session', 'true');
-            isZyphraVoice = true;
-            // For Zyphra, the voice ID is the base64 audio
-            sessionVoiceId = mostRecentVoice.id;
-            console.log('✅ Zyphra voice selected and flag set');
-          } else {
-            // For ElevenLabs, use the voice ID directly
-            console.log('🎤 Using ElevenLabs voice:', mostRecentVoice.name);
-            sessionVoiceId = mostRecentVoice.id;
+          // If this is a Zyphra voice, check that we have the reference audio
+          if (sessionVoiceId.startsWith('zyphra_') && !localStorage.getItem(`zyphra_audio_${sessionVoiceId}`)) {
+            console.warn('Missing reference audio for Zyphra voice:', sessionVoiceId);
+            console.log('Falling back to default voice');
+            sessionVoiceId = DEFAULT_VOICE_ID;
           }
         } else {
-          // If no saved voices, just use the default voice
-          console.log('🎤 No cloned voices found, using default voice');
-          sessionVoiceId = DEFAULT_VOICE_ID;
+          // If no saved voices, clone a new one for this session
+          sessionVoiceId = await apiUtils.cloneVoice(sessionId.substring(0, 6));
         }
       } catch (voiceError) {
-        console.error('❌ Error handling voice retrieval:', voiceError);
+        console.error('Error getting cloned voices:', voiceError);
         // Fallback to default voice
         sessionVoiceId = DEFAULT_VOICE_ID;
       }
       
-      // Create a new session with the voice ID
+      // Create a new session with the cloned voice ID
       const session = storageUtils.createSession(sessionId, sessionVoiceId);
-      
-      // Store whether this is a Zyphra voice in the session metadata
-      if (isZyphraVoice) {
-        console.log('📝 Setting session metadata for Zyphra voice');
-        session.metadata = session.metadata || {};
-        session.metadata.voiceProvider = 'zyphra';
-        storageUtils.saveSession(session);
-      }
-      
       setCurrentSessionId(session.id);
       setSessionActive(true);
+      
+      // Store the current session ID in localStorage for use by other components
+      localStorage.setItem('current_session_id', session.id);
+      console.log('Set current session ID in localStorage:', session.id);
       
       // Create initial greeting
       setConversationState(ConversationState.GREETING);
@@ -964,6 +1076,9 @@ export default function Dashboard() {
       // Set the AI response text before playing audio
       setTextResponse(aiResponse);
       
+      // Generate speech audio using the selected voice ID
+      const audioUrl = await generateSpeech(aiResponse, sessionVoiceId, sessionId);
+      
       // Add the message to conversation history
       setConversationHistory([{
         role: 'assistant',
@@ -971,26 +1086,10 @@ export default function Dashboard() {
         timestamp: new Date()
       }]);
       
-      console.log('🔊 Generating initial greeting audio with voice provider:', isZyphraVoice ? 'Zyphra' : 'ElevenLabs');
-      
-      // Generate the initial greeting audio using the appropriate voice
-      let audioUrl;
-      if (isZyphraVoice) {
-        console.log('🎤 Using Zyphra TTS for initial greeting');
-        // Use Zyphra TTS for the greeting
-        const audioData = await apiUtils.zyphraTTS(aiResponse, sessionVoiceId);
-        const audioBlob = new Blob([audioData], { type: 'audio/mp3' });
-        audioUrl = URL.createObjectURL(audioBlob);
-      } else {
-        console.log('🎤 Using ElevenLabs TTS for initial greeting');
-        // Use ElevenLabs for the greeting
-        audioUrl = await generateSpeech(aiResponse, sessionVoiceId);
-      }
-      
       // Play the audio
       playAudio(audioUrl, aiResponse);
     } catch (error) {
-      console.error('❌ Error starting session:', error);
+      console.error('Error starting session:', error);
       setErrorMessage('Failed to start session');
       setSessionActive(false);
       setConversationState(ConversationState.ERROR);
@@ -1068,99 +1167,122 @@ export default function Dashboard() {
 
   // Process the entire conversation flow
   const processConversation = async (audioBlob: Blob) => {
-    if (!currentSessionId) return;
-    
-    setIsProcessing(true);
-    setConversationState(ConversationState.PROCESSING);
+    if (!currentSessionId) {
+      console.error('No active session ID');
+      return;
+    }
     
     try {
-      // Prepare current session
-      console.log('🚀 Processing conversation for session:', currentSessionId);
-      const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
-      const currentSession = allSessions[currentSessionId];
-      
+      // Get current session to access the voice ID
+      const currentSession = storageUtils.getSession(currentSessionId);
       if (!currentSession) {
-        throw new Error(`Session ${currentSessionId} not found in storage`);
+        console.error('Session not found:', currentSessionId);
+        return;
       }
       
-      // STEP 1: Speech-to-Text Conversion
+      // Update to processing state
+      setConversationState(ConversationState.PROCESSING);
+      setIsProcessing(true);
+      setProcessingStep("Understanding your message...");
+      
+      // Step 1: Convert speech to text
       console.log('🎤 STEP 1: Speech-to-Text Conversion');
-      setProcessingStep("Converting speech to text...");
+      const userText = await apiUtils.speechToText(audioBlob);
       
-      // Capture user's speech as text
-      let userText = '';
-      try {
-        userText = await apiUtils.speechToText(audioBlob);
-        console.log('✅ Speech converted to text:', userText);
-      } catch (sttError) {
-        console.error('❌ Error in speech-to-text conversion:', sttError);
-        // If STT fails, use a default message
-        userText = "I'm having trouble processing what you said. Could you please repeat that?";
+      if (!userText || userText.trim() === '') {
+        setErrorMessage('No speech detected. Please try speaking again.');
+        setIsProcessing(false);
+        setConversationState(ConversationState.LISTENING);
+        return;
       }
       
-      // Update transcript and UI
-      setTranscription(userText);
-      
-      // Add user's message to conversation history
+      // Create user message
       const userMessage: Message = {
         role: 'user',
         content: userText,
         timestamp: new Date()
       };
-      currentSession.conversation.push(userMessage);
       
-      // Save session update to localStorage
-      allSessions[currentSessionId] = currentSession;
-      localStorage.setItem('aura_sessions', JSON.stringify(allSessions));
+      // Add to conversation history
+      console.log('📝 Adding user message to conversation history:', userText);
+      const updatedHistory = [...conversationHistory, userMessage];
+      setConversationHistory(updatedHistory);
       
-      // Get final state of session for next steps
-      const finalSession = JSON.parse(localStorage.getItem('aura_sessions') || '{}')[currentSessionId];
+      // Save user message to storage
+      storageUtils.addMessageToSession(currentSessionId, userMessage);
       
-      // Step 2: Generate AI Response
-      console.log('🧠 STEP 2: Generating AI Response');
-      setProcessingStep("Generating response...");
-      
-      let aiResponse = '';
-      try {
-        aiResponse = await apiUtils.generateResponse(conversationHistory);
-        console.log('✅ Generated AI response:', aiResponse);
-      } catch (aiError) {
-        console.error('❌ Error generating AI response:', aiError);
-        // Fallback response if AI generation fails
-        aiResponse = "I'm having a moment - let me gather my thoughts. What else would you like to discuss?";
+      // Get updated session with the new user message
+      const updatedSession = storageUtils.getSession(currentSessionId);
+      if (!updatedSession) {
+        console.error('Session not found after adding user message');
+        return;
       }
       
-      // Add AI message to conversation
+      // Step 2: Generate AI response
+      console.log('🤖 STEP 2: Generating AI Response');
+      setProcessingStep("Thinking about your response...");
+      const aiResponse = await apiUtils.generateResponse(updatedHistory);
+      
+      // Create AI message
       const aiMessage: Message = {
         role: 'assistant',
         content: aiResponse,
         timestamp: new Date()
       };
       
-      finalSession.conversation.push(aiMessage);
+      // Add AI response to conversation history
+      console.log('📝 Adding AI response to conversation history:', aiResponse);
+      const finalHistory = [...updatedHistory, aiMessage];
+      setConversationHistory(finalHistory);
+      
+      // Save AI message to storage
+      storageUtils.addMessageToSession(currentSessionId, aiMessage);
+      
+      // Get final updated session after adding AI message
+      const finalSession = storageUtils.getSession(currentSessionId);
+      if (!finalSession) {
+        console.error('Session not found after adding AI message');
+        return;
+      }
+      
+      // Log the conversation size to verify it's being stored correctly
+      console.log(`💬 Conversation now has ${finalSession.conversation.length} messages`);
+      
+      // Double-check that the session is properly saved
+      storageUtils.saveSession(finalSession);
+      
+      // Explicitly save the session to localStorage again to be extra sure
+      const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
       allSessions[currentSessionId] = finalSession;
       localStorage.setItem('aura_sessions', JSON.stringify(allSessions));
-      setConversationHistory(prev => [...prev, userMessage, aiMessage]);
+      console.log('📝 Explicitly saved updated session to localStorage');
+      
+      // Dispatch an event to notify other components that a session was updated
+      const event = new CustomEvent('aura_session_updated', { 
+        detail: { sessionId: currentSessionId }
+      });
+      window.dispatchEvent(event);
+      console.log('🔔 Dispatched session updated event');
+      
+      // Send the text response immediately to appear responsive
+      console.log('📤 Showing immediate text response');
+      setTextResponse(aiResponse);
       
       // Step 3: Convert response to speech using the session's voice ID
       console.log('🔊 STEP 3: Text-to-Speech Conversion');
       setProcessingStep("Creating voice response...");
       
       try {
-        // Check if the session has Zyphra voice provider in metadata
-        const isZyphraVoice = finalSession.metadata?.voiceProvider === 'zyphra' || 
-                             localStorage.getItem('aura_use_zyphra_next_session') === 'true';
-        
-        let audioData;
-        if (isZyphraVoice) {
-          console.log('🎤 Using Zyphra voice for TTS');
-          // Use Zyphra for TTS
-          audioData = await apiUtils.zyphraTTS(aiResponse, finalSession.voiceId);
-        } else {
-          console.log('🎤 Using ElevenLabs voice for TTS');
-          // Use ElevenLabs for TTS
-          audioData = await apiUtils.elevenLabsTTS(aiResponse, finalSession.voiceId);
+        // Retrieve the current session again to make sure we have the latest voiceId
+        const finalSession = storageUtils.getSession(currentSessionId);
+        if (!finalSession) {
+          throw new Error('Session not found after adding AI message');
         }
+        
+        console.log('Using voice ID for TTS:', finalSession.voiceId);
+        
+        // Generate speech using appropriate service based on voice ID
+        const audioUrl = await generateSpeech(aiResponse, finalSession.voiceId, currentSessionId);
         
         // Clear processing state
         setIsProcessing(false);
@@ -1169,7 +1291,7 @@ export default function Dashboard() {
         // Play the audio
         setConversationState(ConversationState.SPEAKING);
         setIsAISpeaking(true);
-        playAudio(audioData, aiResponse);
+        playAudio(audioUrl, aiResponse);
       } catch (ttsError) {
         console.error('❌ Error in text-to-speech conversion:', ttsError);
         // If TTS fails, still move to listening state
@@ -1191,92 +1313,143 @@ export default function Dashboard() {
   const playAudio = (audioData: ArrayBuffer | string, responseText: string) => {
     try {
       console.log('▶️ Playing audio response...');
+
+      // Set UI state first
       setIsAISpeaking(true);
       setAnimationActive(true);
-      
-      // Set the text to be shown in the typing animation
       setTextResponse(responseText);
-      
-      // Add the AI message to conversation history
-      setConversationHistory(prev => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: responseText,
-          timestamp: new Date()
-        }
-      ]);
-      
+
+      // Create a new audio element each time
       if (audioRef.current) {
-        // Handle different types of audio data
-        if (typeof audioData === 'string') {
-          // Already a URL or Data URL
-          audioRef.current.src = audioData;
-        } else {
-          // Convert ArrayBuffer to Blob URL
-          const audioBlob = new Blob([audioData], { type: 'audio/mp3' });
-          const audioUrl = URL.createObjectURL(audioBlob);
-          audioRef.current.src = audioUrl;
-          
-          // Set up cleanup for the created URL
-          const originalOnEnded = audioRef.current.onended;
-          audioRef.current.onended = (event) => {
-            URL.revokeObjectURL(audioUrl);
-            if (originalOnEnded && typeof originalOnEnded === 'function') {
-              // Use proper function call with correct this context
-              originalOnEnded.call(audioRef.current!, event);
+        // Stop any currently playing audio first
+        try {
+          audioRef.current.pause();
+          audioRef.current.src = '';
+        } catch (e) {
+          console.warn('Error stopping previous audio:', e);
+        }
+      }
+      
+      const audio = new Audio();
+      audioRef.current = audio;
+      
+      // Helper function to safely play audio and handle errors
+      const safePlayAudio = async (audioElement: HTMLAudioElement, source: string): Promise<boolean> => {
+        return new Promise((resolve) => {
+          // Set up success handler
+          audioElement.oncanplaythrough = () => {
+            console.log('Audio can play through, starting playback');
+            
+            const playPromise = audioElement.play();
+            if (playPromise !== undefined) {
+              playPromise
+                .then(() => {
+                  console.log('✅ Audio playback started successfully');
+                  resolve(true);
+                })
+                .catch((error) => {
+                  console.error('Error during audio play():', error);
+                  resolve(false);
+                });
+            } else {
+              console.log('Play promise was undefined');
+              resolve(true); // Assume it worked since we got no promise
             }
           };
-        }
-        
-        audioRef.current.onended = () => {
-          console.log('🔊 Audio playback ended');
-          setIsAISpeaking(false);
-          setAnimationActive(false);
-          setConversationState(ConversationState.LISTENING);
           
-          // After the AI finishes speaking, reset the Zyphra flag
-          // This ensures it's only used for one complete AI response
-          localStorage.removeItem('aura_use_zyphra_next_session');
-        };
-        
-        audioRef.current.onerror = () => {
-          console.error('🔴 Audio playback error');
-          setIsAISpeaking(false);
-          setAnimationActive(false);
-          setConversationState(ConversationState.LISTENING);
+          // Set up error handler
+          audioElement.onerror = (e) => {
+            console.error('Audio error during loading:', e);
+            resolve(false);
+          };
           
-          // Also reset on error
-          localStorage.removeItem('aura_use_zyphra_next_session');
-        };
-        
-        // Play the audio
-        audioRef.current.play().catch(err => {
-          console.error('🔴 Failed to play audio:', err);
-          setIsAISpeaking(false);
-          setAnimationActive(false);
-          setConversationState(ConversationState.LISTENING);
+          // Set the source to trigger loading
+          audioElement.src = source;
+          audioElement.load();
           
-          // Also reset on playback failure
-          localStorage.removeItem('aura_use_zyphra_next_session');
+          // Set timeout in case oncanplaythrough never fires
+          setTimeout(() => {
+            if (!audioElement.paused) {
+              console.log('Audio is already playing');
+              resolve(true);
+            } else {
+              console.log('Timeout reached, trying to play anyway');
+              audioElement.play().then(() => resolve(true)).catch(() => resolve(false));
+            }
+          }, 1000);
         });
-      } else {
-        console.error('🔴 Audio element not found');
+      };
+      
+      // Clean up any previous audio URLs
+      const cleanupUrl = (url: string) => {
+        if (url && url.startsWith('blob:')) {
+          console.log('Cleaning up blob URL:', url);
+          try {
+            URL.revokeObjectURL(url);
+          } catch (e) {
+            console.warn('Failed to revoke URL:', e);
+          }
+        }
+      };
+      
+      // Configure event handlers
+      audio.onended = () => {
+        console.log('🔊 Audio playback ended');
         setIsAISpeaking(false);
         setAnimationActive(false);
         setConversationState(ConversationState.LISTENING);
-        
-        // Also reset if audio element missing
-        localStorage.removeItem('aura_use_zyphra_next_session');
+      };
+      
+      // Handle different types of audio data
+      let audioUrl: string;
+      
+      if (typeof audioData === 'string') {
+        console.log('Playing audio from URL or Data URL');
+        audioUrl = audioData;
+      } else {
+        // Convert ArrayBuffer to Blob URL
+        console.log('Converting ArrayBuffer to Blob URL for audio playback');
+        const audioBlob = new Blob([audioData], { type: 'audio/mpeg' });
+        audioUrl = URL.createObjectURL(audioBlob);
       }
+      
+      // Start playback with our safe play function
+      safePlayAudio(audio, audioUrl).then(success => {
+        if (!success) {
+          console.warn('Failed to play audio, trying fallback...');
+          cleanupUrl(audioUrl);
+          
+          // Try browser's speech synthesis as fallback
+          try {
+            console.log('Using speech synthesis as fallback');
+            const utterance = new SpeechSynthesisUtterance(responseText);
+            window.speechSynthesis.speak(utterance);
+            
+            // Update state when speech synthesis ends
+            utterance.onend = () => {
+              setIsAISpeaking(false);
+              setAnimationActive(false);
+              setConversationState(ConversationState.LISTENING);
+            };
+          } catch (synthError) {
+            console.error('Speech synthesis fallback failed:', synthError);
+            setIsAISpeaking(false);
+            setAnimationActive(false);
+            setConversationState(ConversationState.LISTENING);
+          }
+        }
+      });
+      
+      // Clean up URL when playback ends
+      audio.addEventListener('ended', () => {
+        cleanupUrl(audioUrl);
+      });
+      
     } catch (error) {
-      console.error('🔴 Error playing audio:', error);
+      console.error('🔴 Error in playAudio function:', error);
       setIsAISpeaking(false);
       setAnimationActive(false);
       setConversationState(ConversationState.LISTENING);
-      
-      // Also reset on general error
-      localStorage.removeItem('aura_use_zyphra_next_session');
     }
   };
 
@@ -1394,21 +1567,18 @@ export default function Dashboard() {
   // End the conversation session
   const endSession = () => {
     cleanupAudioResources();
-     
+    
     // End the session in storage
     if (currentSessionId) {
       storageUtils.endSession(currentSessionId);
-       
+      
       // Optional: Sync with backend
       storageUtils.syncWithBackend(currentSessionId);
-      
-      // Reset Zyphra use flag since session is now complete
-      localStorage.removeItem('aura_use_zyphra_next_session');
     }
-     
+    
     setSessionActive(false);
     setConversationState(ConversationState.ENDED);
-     
+    
     // Stay on the current page instead of navigating away
   };
 
@@ -1422,49 +1592,6 @@ export default function Dashboard() {
       return "Aura is speaking...";
     } else {
       return stateMessages[conversationState] || "Ready";
-    }
-  };
-
-  // Process audio through socket
-  const processAudioThroughSocket = async (audioBlob: Blob) => {
-    try {
-      if (!socketRef.current) {
-        throw new Error('Socket connection not established');
-      }
-      
-      // Convert Blob to ArrayBuffer
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const audioBuffer = new Uint8Array(arrayBuffer);
-      
-      // Check if we should use Zyphra for this session
-      const useZyphra = localStorage.getItem('aura_use_zyphra_next_session') === 'true';
-      
-      // Send audio data to the server
-      socketRef.current.emit('voice-data', {
-        sessionId: currentSessionId,
-        audioData: Array.from(audioBuffer),
-        useZyphra
-      });
-      
-      return new Promise((resolve, reject) => {
-        // Set up a one-time listener for the response
-        socketRef.current?.once('voice-response', (response: any) => {
-          resolve(response);
-        });
-        
-        // Handle errors
-        socketRef.current?.once('error', (error: any) => {
-          reject(error);
-        });
-        
-        // Set a timeout in case the server doesn't respond
-        setTimeout(() => {
-          reject(new Error('Socket response timeout'));
-        }, 10000); // 10-second timeout
-      });
-    } catch (error) {
-      console.error('Error processing audio through socket:', error);
-      throw error;
     }
   };
 

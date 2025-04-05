@@ -11,7 +11,6 @@ import {
   RefreshCw,
   AlertCircle
 } from 'lucide-react';
-import { ZyphraClient } from '@zyphra/client';
 
 // API Constants
 const ELEVENLABS_API_KEY = process.env.NEXT_PUBLIC_ELEVENLABS_API_KEY || '';
@@ -192,136 +191,267 @@ export default function VoiceClonePage() {
     setError(null);
     
     try {
-      // Get Zyphra API key from environment variables
-      const ZYPHRA_API_KEY = process.env.NEXT_PUBLIC_ZYPHRA_API_KEY;
-      if (!ZYPHRA_API_KEY) {
-        setError('ZYPHRA_API_KEY is missing. Please set NEXT_PUBLIC_ZYPHRA_API_KEY in your environment.');
-        setIsSubmitting(false);
-        return;
+      // Import zyphraService
+      const zyphraService = (await import('../../../../services/zyphraService')).default;
+      
+      // Check if Zyphra service is initialized
+      if (!zyphraService.isInitialized()) {
+        console.warn('Zyphra service not initialized, falling back to ElevenLabs');
+        // If Zyphra is not available, fall back to ElevenLabs
+        return submitVoiceCloneElevenLabs();
       }
       
-      let audioBlob: Blob | null = null;
-      let base64Audio = '';
+      // Get the audio blob we're going to use
+      const audioToUse = previewSource === 'recorded' ? recordedAudio : uploadedAudio;
       
-      // Process either the recorded audio or uploaded audio file
-      if (previewSource === 'recorded' && recordedAudio) {
-        audioBlob = recordedAudio;
-        
-        // Convert blob to base64 using FileReader as per Zyphra docs
-        const reader = new FileReader();
-        base64Audio = await new Promise((resolve, reject) => {
-          reader.onload = () => {
-            // Extract the base64 part after the comma
-            const result = reader.result as string;
-            const base64 = result.split(',')[1];
-            resolve(base64);
-          };
-          reader.onerror = reject;
-          // TypeScript null check
-          if (audioBlob) {
-            reader.readAsDataURL(audioBlob);
-          } else {
-            reject(new Error('Audio blob is null'));
-          }
-        });
-      } else if (previewSource === 'uploaded' && uploadedAudio) {
-        audioBlob = uploadedAudio;
-        
-        // Convert file to base64 using FileReader as per Zyphra docs
-        const reader = new FileReader();
-        base64Audio = await new Promise((resolve, reject) => {
-          reader.onload = () => {
-            // Extract the base64 part after the comma
-            const result = reader.result as string;
-            const base64 = result.split(',')[1];
-            resolve(base64);
-          };
-          reader.onerror = reject;
-          // TypeScript null check
-          if (audioBlob) {
-            reader.readAsDataURL(audioBlob);
-          } else {
-            reject(new Error('Audio blob is null'));
-          }
-        });
+      if (!audioToUse) {
+        throw new Error('No audio file to process');
       }
       
-      if (!audioBlob || !base64Audio) {
-        throw new Error('Failed to process audio');
+      // Find the active session ID
+      const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
+      const activeSessionKey = Object.keys(allSessions).find(
+        key => allSessions[key] && !allSessions[key].endedAt
+      ) || '';
+      
+      // Convert the audio file to proper format for voice cloning
+      if (!activeSessionKey) {
+        console.warn('No active session found for voice cloning');
+        throw new Error('No active session found. Please start a session first.');
       }
       
-      console.log('Sending TTS request with base64 audio data');
+      // Convert audio to File array format needed for createVoice
+      const audioFile = audioToUse instanceof File ? 
+        audioToUse : 
+        new File([audioToUse], 'recording.wav', { type: 'audio/wav' });
       
-      // Generate a test TTS with the cloned voice to validate
-      // We're using a simple text to test the voice cloning
-      const demoText = "This is a test of my voice clone with Zyphra";
+      // Generate a voice ID
+      const voiceId = `zyphra_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       
-      // Create Zyphra client instance with API key
-      const client = new ZyphraClient({ apiKey: ZYPHRA_API_KEY });
+      // Use the zyphraService's createVoice method to create the voice
+      await zyphraService.createVoice(
+        voiceName,
+        [audioFile],
+        voiceId,
+        (status) => {
+          console.log('Voice creation status:', status);
+        }
+      );
       
-      // Use the client to create voice clone by using the audio in TTS request
-      const audioResponse = await client.audio.speech.create({
-        text: demoText,
-        speaking_rate: 15,
-        model: 'zonos-v0.1-transformer',
-        speaker_audio: base64Audio
+      console.log('Voice created with ID:', voiceId);
+      
+      // Store the voice in the cloned voices list
+      const savedVoices = JSON.parse(localStorage.getItem('aura_cloned_voices') || '[]');
+      savedVoices.push({
+        id: voiceId,
+        name: voiceName,
+        type: 'zyphra',
+        createdAt: new Date().toISOString()
       });
+      localStorage.setItem('aura_cloned_voices', JSON.stringify(savedVoices));
       
-      // Voice cloning was successful if we got a response
-      console.log('Successfully created voice clone, received audio response');
+      // Update current active session to use this voice
+      await updateCurrentSessionVoice(voiceId);
       
-      // Create a unique voice ID for display purposes
-      const displayVoiceId = `${voiceName}_${Date.now()}`;
-      
+      // Set success state
       setSuccess({
-        voice_id: displayVoiceId,
+        voice_id: voiceId,
         name: voiceName
       });
       
-      // CRITICAL: First remove any existing Zyphra voices to avoid conflicts
-      const savedVoices = JSON.parse(localStorage.getItem('aura_cloned_voices') || '[]');
-      const filteredVoices = savedVoices.filter((voice: any) => voice.provider !== 'zyphra');
-      
-      // Now add the new voice at the beginning (most recent)
-      filteredVoices.unshift({
-        id: base64Audio, // Store the actual base64 audio as the voice ID for Zyphra
-        name: voiceName,
-        createdAt: new Date().toISOString(),
-        provider: 'zyphra' // Mark this as a Zyphra voice
-      });
-      
-      // Save to localStorage
-      console.log('Saving cloned voice to localStorage:', voiceName);
-      localStorage.setItem('aura_cloned_voices', JSON.stringify(filteredVoices));
-      
-      // Set flag to use Zyphra for the next session
-      localStorage.setItem('aura_use_zyphra_next_session', 'true');
+      // Test generate some TTS right away to verify voice works
+      try {
+        const testText = "Voice cloning successful. I'm now using your voice.";
+        console.log('Testing voice with sample text:', testText);
+        
+        // Get the audio reference we just saved
+        const savedAudio = localStorage.getItem(`zyphra_audio_${voiceId}`);
+        if (!savedAudio) {
+          console.warn('No saved audio found for newly created voice');
+          return;
+        }
+        
+        // Generate test speech with Zyphra
+        const audioBlob = await zyphraService.generateSpeechWithSavedVoice(
+          testText, 
+          savedAudio, 
+          voiceId
+        );
+        console.log('Test TTS generation successful, blob size:', audioBlob.size, 'bytes');
+        
+        if (audioBlob && audioBlob.size > 100) {
+          // Play the test audio if successful
+          const audioUrl = URL.createObjectURL(audioBlob);
+          console.log('Created audio URL for test playback:', audioUrl);
+          
+          // Create a new audio element specifically for this test
+          const audio = new Audio();
+          
+          // Set up event handling before setting the source
+          audio.onended = () => {
+            console.log('Test audio playback completed');
+            URL.revokeObjectURL(audioUrl);
+          };
+          
+          audio.onerror = (e) => {
+            console.error('Error playing test audio:', e);
+            URL.revokeObjectURL(audioUrl);
+          };
+          
+          // Set the source and play
+          audio.src = audioUrl;
+          
+          // Use a promise to ensure proper handling
+          const playPromise = audio.play();
+          
+          if (playPromise !== undefined) {
+            playPromise.catch(e => {
+              console.error('Could not play test audio:', e);
+              URL.revokeObjectURL(audioUrl);
+              
+              // Try with browser's speech synthesis as fallback
+              try {
+                const utterance = new SpeechSynthesisUtterance(testText);
+                window.speechSynthesis.speak(utterance);
+              } catch (sttError) {
+                console.error('Speech synthesis fallback also failed:', sttError);
+              }
+            });
+          }
+        } else {
+          console.warn('Generated test audio is invalid or too small');
+        }
+      } catch (testError) {
+        console.error('Test TTS generation failed:', testError);
+        // Continue with the voice cloning process even if the test fails
+      }
       
     } catch (error) {
-      console.error('Error cloning voice with Zyphra:', error);
-      setError(error instanceof Error ? error.message : 'An unknown error occurred');
+      console.error('Error with Zyphra voice cloning:', error);
+      
+      // Fall back to ElevenLabs if Zyphra fails
+      return submitVoiceCloneElevenLabs();
     } finally {
       setIsSubmitting(false);
     }
   };
   
-  // Helper function to properly convert ArrayBuffer to base64
-  const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
-    const bytes = new Uint8Array(buffer);
-    const len = bytes.byteLength;
-    let binary = '';
-    for (let i = 0; i < len; i++) {
-      binary += String.fromCharCode(bytes[i]);
+  // Update the current session to use the newly created voice
+  const updateCurrentSessionVoice = async (voiceId: string) => {
+    try {
+      // Get all sessions from localStorage
+      const allSessions = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
+      
+      // Find the active session (one without endedAt)
+      const activeSessionKey = Object.keys(allSessions).find(
+        key => allSessions[key] && !allSessions[key].endedAt
+      );
+      
+      if (activeSessionKey) {
+        console.log('Updating active session to use new voice:', voiceId);
+        
+        // Update the active session with the new voice ID
+        allSessions[activeSessionKey].voiceId = voiceId;
+        
+        // Save back to localStorage
+        localStorage.setItem('aura_sessions', JSON.stringify(allSessions));
+        
+        // Also make sure current_session_id is properly set
+        localStorage.setItem('current_session_id', activeSessionKey);
+        
+        // Make sure the session object has the voiceId properly set
+        console.log('Before dispatch, session has voiceId:', allSessions[activeSessionKey].voiceId);
+        
+        // Create a more detailed event with both the voice ID and session ID
+        window.dispatchEvent(new CustomEvent('voice_cloned', { 
+          detail: { 
+            voiceId: voiceId,
+            sessionId: activeSessionKey,
+            timestamp: Date.now(),
+            isZyphraVoice: voiceId.startsWith('zyphra_')
+          }
+        }));
+        
+        console.log('Voice cloned event dispatched for voice:', voiceId);
+        
+        // Double check that the event was dispatched
+        setTimeout(() => {
+          const currentSessions = JSON.parse(localStorage.getItem('aura_sessions') || '{}');
+          if (currentSessions[activeSessionKey]) {
+            console.log('After event, session has voiceId:', currentSessions[activeSessionKey].voiceId);
+          }
+        }, 500);
+      } else {
+        console.log('No active session found to update voice ID');
+      }
+    } catch (error) {
+      console.error('Error updating current session voice:', error);
     }
-    return window.btoa(binary);
   };
   
-  // Helper function to validate base64 string
-  const isValidBase64 = (str: string): boolean => {
-    if (typeof str !== 'string') return false;
-    if (str.length === 0) return false;
-    // Simple regex for base64 validation
-    return /^[A-Za-z0-9+/=]+$/.test(str);
+  // Fall back to ElevenLabs voice cloning as backup
+  const submitVoiceCloneElevenLabs = async () => {
+    if (!ELEVENLABS_API_KEY) {
+      setError('API key is missing. Please set NEXT_PUBLIC_ELEVENLABS_API_KEY in your environment.');
+      setIsSubmitting(false);
+      return;
+    }
+    
+    try {
+      // Create a FormData object
+      const formData = new FormData();
+      
+      // Add the name and description
+      formData.append('name', voiceName);
+      formData.append('description', 'Created with Aura Plus voice cloning tool');
+      
+      // Add the audio file
+      if (previewSource === 'recorded' && recordedAudio) {
+        formData.append('files', recordedAudio, 'recording.wav');
+      } else if (previewSource === 'uploaded' && uploadedAudio) {
+        formData.append('files', uploadedAudio);
+      }
+      
+      // Set the API options
+      formData.append('labels', JSON.stringify({"accent": "american"}));
+      
+      // Call the ElevenLabs API
+      const response = await fetch('https://api.elevenlabs.io/v1/voices/add', {
+        method: 'POST',
+        headers: {
+          'xi-api-key': ELEVENLABS_API_KEY,
+          'Accept': 'application/json'
+        },
+        body: formData
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail?.message || 'Failed to clone voice');
+      }
+      
+      const data = await response.json();
+      setSuccess(data);
+      
+      // Save the voice ID to localStorage for later use
+      if (data.voice_id) {
+        const savedVoices = JSON.parse(localStorage.getItem('aura_cloned_voices') || '[]');
+        savedVoices.push({
+          id: data.voice_id,
+          name: data.name,
+          type: 'elevenlabs',
+          createdAt: new Date().toISOString()
+        });
+        localStorage.setItem('aura_cloned_voices', JSON.stringify(savedVoices));
+        
+        // Update current active session to use this voice if one exists
+        await updateCurrentSessionVoice(data.voice_id);
+      }
+      
+    } catch (error) {
+      console.error('Error cloning voice:', error);
+      setError(error instanceof Error ? error.message : 'An unknown error occurred');
+    }
   };
   
   return (
