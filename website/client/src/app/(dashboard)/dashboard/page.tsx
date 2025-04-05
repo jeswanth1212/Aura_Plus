@@ -201,14 +201,38 @@ const apiUtils = {
     try {
       console.log("Generating AI response...");
 
-      // Get the last user message
+      // Create a proper conversation history for the AI
+      const formattedHistory = history.map(msg => ({
+        role: msg.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: msg.content }]
+      }));
+
+      // Get the last user message as context
       const lastMessage = history.length > 0 ? history[history.length - 1] : null;
-      const promptText = lastMessage && lastMessage.role === 'user' ? lastMessage.content : "How are you feeling today?";
+      const userContext = lastMessage && lastMessage.role === 'user' ? lastMessage.content : "How are you feeling today?";
       
       // Use consistent model name with what works in the analysis page
       const modelName = "gemini-1.5-pro";
       
-      // API call to Gemini
+      // Create a better system prompt with length guidelines
+      const systemPrompt = {
+        role: "user",
+        parts: [{
+          text: `You are a professional therapist named Aura. Respond to the client with empathy, insight, and therapeutic techniques appropriate to their needs. Keep responses concise (under 3 sentences for simple responses, 4-5 sentences maximum for complex topics).
+
+Your responses should:
+- Be warm, empathetic and supportive
+- Use reflective listening techniques
+- Provide gentle guidance when appropriate
+- Ask open-ended questions to encourage exploration
+- Avoid overly clinical language or jargon
+- Never exceed 150 words total
+
+The client context is: ${userContext}`
+        }]
+      };
+      
+      // API call to Gemini with full conversation history
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1/models/${modelName}:generateContent?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`,
         {
@@ -217,21 +241,14 @@ const apiUtils = {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            contents: [
-              {
-                role: "user",
-                parts: [
-                  {
-                    text: `You are a Therapist. Respond to the following text in a helpful and empathetic manner: ${promptText}`,
-                  },
-                ],
-              },
-            ],
+            contents: formattedHistory.length > 1 ? 
+              [...formattedHistory.slice(-5), systemPrompt] : // Include up to 5 recent messages
+              [systemPrompt], // Just use system prompt if no history
             generationConfig: {
               temperature: 0.7,
               topK: 40,
               topP: 0.95,
-              maxOutputTokens: 1024,
+              maxOutputTokens: 300, // Reduced from 1024 for more concise responses
             },
           }),
         }
@@ -264,8 +281,10 @@ const apiUtils = {
     try {
       console.log('🎵 Converting text to speech using voice ID:', voiceId);
       
-      // Limit text length for faster processing
-      const limitedText = text.length > 150 ? text.substring(0, 150) + "..." : text;
+      // Improved text processing for TTS
+      // Split long text into chunks of up to 250 characters at sentence boundaries
+      const chunks = this.splitIntoOptimalChunks(text, 250);
+      const firstChunk = chunks[0]; // Always process at least the first chunk
       
       if (!ELEVENLABS_API_KEY) {
         throw new Error('ELEVENLABS_API_KEY not configured');
@@ -279,7 +298,7 @@ const apiUtils = {
           'xi-api-key': ELEVENLABS_API_KEY
         },
         body: JSON.stringify({
-          text: limitedText,
+          text: firstChunk,
           model_id: 'eleven_turbo_v2',
           voice_settings: {
             stability: 0.5,
@@ -300,6 +319,47 @@ const apiUtils = {
       console.error('❌ Error in text-to-speech conversion:', error);
       throw error;
     }
+  },
+  
+  // Split text into optimal chunks for TTS processing
+  splitIntoOptimalChunks(text: string, maxChunkLength: number): string[] {
+    // If text is already short enough, return as is
+    if (text.length <= maxChunkLength) {
+      return [text];
+    }
+    
+    const chunks: string[] = [];
+    let remainingText = text;
+    
+    while (remainingText.length > 0) {
+      // If remaining text fits in a chunk, add it and finish
+      if (remainingText.length <= maxChunkLength) {
+        chunks.push(remainingText);
+        break;
+      }
+      
+      // Find a good breaking point (end of sentence or clause)
+      let breakPoint = remainingText.substring(0, maxChunkLength).lastIndexOf('.');
+      if (breakPoint === -1) {
+        breakPoint = remainingText.substring(0, maxChunkLength).lastIndexOf('!');
+      }
+      if (breakPoint === -1) {
+        breakPoint = remainingText.substring(0, maxChunkLength).lastIndexOf('?');
+      }
+      if (breakPoint === -1) {
+        breakPoint = remainingText.substring(0, maxChunkLength).lastIndexOf(',');
+      }
+      if (breakPoint === -1 || breakPoint < maxChunkLength / 2) {
+        // If no good breaking point, just break at the max length
+        breakPoint = maxChunkLength;
+      }
+      
+      // Add this chunk and continue with remaining text
+      chunks.push(remainingText.substring(0, breakPoint + 1).trim());
+      remainingText = remainingText.substring(breakPoint + 1).trim();
+    }
+    
+    return chunks;
   },
   
   async syncWithBackend(sessionToSync: SessionData): Promise<string | null> {
@@ -850,8 +910,15 @@ export default function Dashboard() {
       const finalHistory = [...updatedHistory, aiMessage];
       setConversationHistory(finalHistory);
       
-      // Save to storage
+      // Save to storage immediately to ensure entire conversation is captured
       storageUtils.addMessageToSession(currentSessionId, aiMessage);
+      storageUtils.saveSession(currentSession);
+      
+      // Dispatch an event to notify other components that a session was updated
+      const event = new CustomEvent('aura_session_updated', { 
+        detail: { sessionId: currentSessionId }
+      });
+      window.dispatchEvent(event);
       
       // Send the text response immediately to appear responsive
       console.log('📤 Showing immediate text response');
@@ -880,10 +947,7 @@ export default function Dashboard() {
         setState(ConversationState.LISTENING);
       }
       
-      // Add to storage
-      storageUtils.saveSession(currentSession);
-      
-      // Optional: Sync with backend if needed
+      // Sync with backend if connected
       apiUtils.syncWithBackend(currentSession);
     } catch (error) {
       console.error('❌ Error processing conversation:', error);
