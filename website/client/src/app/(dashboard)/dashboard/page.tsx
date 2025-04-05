@@ -5,7 +5,31 @@ import { useRouter } from 'next/navigation';
 import { Mic, MicOff, X, Play, History, BarChart2 } from 'lucide-react';
 import TypingAnimation from '@/components/TypingAnimation';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { ZyphraClient } from '@zyphra/client';
+
+// Create a mock ZyphraClient if the real one isn't available
+let ZyphraClient;
+try {
+  const dynamicImport = require('@zyphra/client');
+  ZyphraClient = dynamicImport.ZyphraClient;
+} catch (error) {
+  console.warn('Warning: @zyphra/client package not found. Voice cloning with Zyphra will be disabled.');
+  // Create a mock client that will gracefully fail
+  ZyphraClient = class MockZyphraClient {
+    constructor() {
+      console.warn('Zyphra client is not available. Using fallback voice.');
+    }
+    
+    audio = {
+      speech: {
+        create: async () => {
+          console.warn('Zyphra TTS not available. Returning empty audio.');
+          // Return an empty audio blob that can be converted to ArrayBuffer
+          return new Blob([], { type: 'audio/mpeg' });
+        }
+      }
+    }
+  };
+}
 
 // Conversation states
 enum ConversationState {

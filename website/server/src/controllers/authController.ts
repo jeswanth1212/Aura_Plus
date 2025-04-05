@@ -10,7 +10,7 @@ import { EmailService } from '../services/emailService';
 // Generate JWT token
 const generateToken = (id: Schema.Types.ObjectId | string): string => {
   // Check if JWT_SECRET is set in environment variables
-  const jwtSecret = process.env.JWT_SECRET;
+  const jwtSecret = '872d69bde6a1851539e1692d9c8c8b589494319136e7f368c4dfa808440abda5de832d5684fd3e1ff456bcf19109f9d3208e4e93fb840c728e653e150378fada';
   if (!jwtSecret) {
     console.error('JWT_SECRET not set in environment variables');
     throw new Error('JWT configuration error');

@@ -1,6 +1,21 @@
 import axios from 'axios';
 import dotenv from 'dotenv';
-import { ZyphraClient } from '@zyphra/client';
+
+// Try to import ZyphraClient with a fallback
+let ZyphraClient;
+try {
+  // Use dynamic import instead of static import
+  const ZyphraModule = require('@zyphra/client');
+  ZyphraClient = ZyphraModule.ZyphraClient;
+} catch (error) {
+  console.warn('Warning: @zyphra/client package not found. Voice cloning with Zyphra will be disabled.');
+  // Create a placeholder that will throw an error if used
+  ZyphraClient = class MockZyphraClient {
+    constructor() {
+      throw new Error('Zyphra client is not available. Please install @zyphra/client package.');
+    }
+  };
+}
 
 dotenv.config();
 

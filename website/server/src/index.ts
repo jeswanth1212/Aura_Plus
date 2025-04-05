@@ -71,7 +71,7 @@ const connectDB = async () => {
       
       const conn = await mongoose.connect(mongoUri, {
         serverSelectionTimeoutMS: 10000,
-        socketTimeoutMS: 45000,
+        socketTimeoutMS: 43005,
         connectTimeoutMS: 10000,
         maxPoolSize: 10,
         family: 4 // Force IPv4
@@ -129,7 +129,7 @@ const connectDB = async () => {
 };
 
 // Start server
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3005;
 connectDB().then(() => {
   httpServer.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);

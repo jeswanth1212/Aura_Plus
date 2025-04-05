@@ -69,12 +69,12 @@ Create `.env` files in both client and server directories.
 
 Client `.env`:
 ```
-NEXT_PUBLIC_API_URL=http://localhost:5000
+NEXT_PUBLIC_API_URL=http://localhost:3005
 ```
 
 Server `.env`:
 ```
-PORT=5000
+PORT=3005
 MONGODB_URI=your_mongodb_uri
 JWT_SECRET=your_jwt_secret
 ELEVENLABS_API_KEY=your_elevenlabs_key

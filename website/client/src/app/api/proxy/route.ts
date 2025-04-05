@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 // Base URL for our backend server
-const API_BASE_URL = process.env.API_URL || 'http://localhost:5000';
+const API_BASE_URL = process.env.API_URL || 'http://localhost:3005';
 
 /**
  * Helper to validate token and create error response if invalid
