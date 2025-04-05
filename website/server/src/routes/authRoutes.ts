@@ -4,19 +4,23 @@ import {
   login,
   verifyEmail,
   forgotPassword,
-  resetPassword
+  resetPassword,
+  getCurrentUser,
+  resendVerificationEmail
 } from '../controllers/authController';
+import { protect } from '../middleware/auth';
 
 const router = express.Router();
 
-// Auth routes
+// Public routes
 router.post('/register', register);
 router.post('/login', login);
-router.get('/verify/:token', verifyEmail);
+router.get('/verify-email/:token', verifyEmail);
 router.post('/forgot-password', forgotPassword);
 router.post('/reset-password/:token', resetPassword);
+router.post('/resend-verification', resendVerificationEmail);
 
-// Add verify email route
-router.get('/verify-email/:token', verifyEmail);
+// Protected routes
+router.get('/me', protect, getCurrentUser);
 
 export default router; 

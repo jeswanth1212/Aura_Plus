@@ -1,97 +1,143 @@
+'use client';
+
 import Link from 'next/link';
-import { ArrowRight, Brain, MessageSquare, History, Mic } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { ArrowRight, Heart, MessageSquare, Brain } from 'lucide-react';
+import { useEffect } from 'react';
 
-export default function Home() {
+export default function LandingPage() {
+  const router = useRouter();
+  
+  // Function to clear auth cookies
+  const clearAuthCookies = () => {
+    document.cookie = 'token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
+    localStorage.removeItem('user');
+    localStorage.removeItem('token');
+  };
+
+  useEffect(() => {
+    // Clear cookies when landing page loads
+    clearAuthCookies();
+  }, []);
+  
   return (
-    <main className="flex min-h-screen flex-col">
-      {/* Hero Section */}
-      <section className="flex flex-col items-center justify-center px-4 py-24 text-center bg-gradient-to-b from-white to-blue-50">
-        <div className="ai-orb mb-8"></div>
-        <h1 className="text-4xl md:text-6xl font-bold tracking-tight">
-          Meet <span className="text-blue-600">Aura Plus</span>
-        </h1>
-        <p className="mt-4 text-xl md:text-2xl text-gray-600 max-w-3xl">
-          Your AI-powered therapy companion for mental wellness and personal growth.
-        </p>
-        <div className="flex flex-col sm:flex-row gap-4 mt-8">
-          <Link 
-            href="/login" 
-            className="inline-flex items-center justify-center rounded-md bg-blue-600 px-6 py-3 text-white shadow-sm hover:bg-blue-700 transition-colors">
-            Get Started
-            <ArrowRight className="ml-2 h-4 w-4" />
-          </Link>
-          <Link 
-            href="/about" 
-            className="inline-flex items-center justify-center rounded-md bg-white border border-gray-300 px-6 py-3 shadow-sm hover:bg-gray-100 transition-colors">
-            Learn More
-          </Link>
+    <div className="min-h-screen flex flex-col">
+      {/* Header */}
+      <header className="bg-white shadow-sm">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
+          <div className="flex items-center">
+            <h1 className="text-xl font-bold text-purple-700">Aura Plus</h1>
+          </div>
+          <nav className="flex items-center space-x-4">
+            <a 
+              href="/login"
+              onClick={clearAuthCookies}
+              className="text-gray-600 hover:text-gray-900 px-3 py-2 rounded-md text-sm font-medium"
+            >
+              Login
+            </a>
+            <a
+              href="/register"
+              onClick={clearAuthCookies}
+              className="bg-purple-600 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-purple-700"
+            >
+              Sign Up
+            </a>
+          </nav>
         </div>
-      </section>
-
-      {/* Features Section */}
-      <section className="py-16 px-4 md:px-6 lg:px-8">
-        <div className="container mx-auto">
-          <h2 className="text-3xl font-bold text-center mb-12">
-            How Aura Plus Helps You
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
-            <div className="dashboard-card flex flex-col items-center text-center p-6">
-              <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center mb-4">
-                <MessageSquare className="h-6 w-6 text-blue-600" />
-              </div>
-              <h3 className="text-xl font-medium mb-2">Interactive Sessions</h3>
-              <p className="text-gray-600">
-                Have natural conversations with an AI that understands your needs and responds with empathy.
+      </header>
+      
+      {/* Hero Section */}
+      <main className="flex-grow">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 md:py-24">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+            <div>
+              <h1 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
+                Your AI Therapy Companion
+              </h1>
+              <p className="text-xl text-gray-600 mb-8">
+                Experience meaningful conversations with Aura Plus, your personal AI therapist designed to help you navigate life's challenges.
               </p>
+              <div className="flex flex-col sm:flex-row gap-4">
+                <a
+                  href="/register"
+                  onClick={clearAuthCookies}
+                  className="bg-purple-600 text-white px-8 py-4 rounded-md text-lg font-medium hover:bg-purple-700 flex items-center justify-center"
+                >
+                  Get Started
+                  <ArrowRight className="ml-2 h-5 w-5" />
+                </a>
+                <a
+                  href="/login"
+                  onClick={clearAuthCookies}
+                  className="bg-white text-purple-600 border border-purple-600 px-8 py-4 rounded-md text-lg font-medium hover:bg-gray-50 flex items-center justify-center"
+                >
+                  Login
+                </a>
+              </div>
             </div>
-
-            <div className="dashboard-card flex flex-col items-center text-center p-6">
-              <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center mb-4">
-                <Mic className="h-6 w-6 text-blue-600" />
+            <div className="hidden md:block">
+              <div className="aspect-w-5 aspect-h-4 rounded-xl bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center p-8">
+                <div className="text-white text-center">
+                  <div className="flex justify-center space-x-6 mb-6">
+                    <Heart className="h-16 w-16" />
+                    <MessageSquare className="h-16 w-16" />
+                    <Brain className="h-16 w-16" />
+                  </div>
+                  <h3 className="text-2xl font-semibold mb-2">Aura Plus</h3>
+                  <p className="text-lg opacity-80">AI-Powered Therapy</p>
+                </div>
               </div>
-              <h3 className="text-xl font-medium mb-2">Voice Enabled</h3>
-              <p className="text-gray-600">
-                Speak naturally with advanced voice recognition and lifelike AI responses.
-              </p>
-            </div>
-
-            <div className="dashboard-card flex flex-col items-center text-center p-6">
-              <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center mb-4">
-                <History className="h-6 w-6 text-blue-600" />
-              </div>
-              <h3 className="text-xl font-medium mb-2">Progress Tracking</h3>
-              <p className="text-gray-600">
-                Review past sessions and track your mental health journey over time.
-              </p>
-            </div>
-
-            <div className="dashboard-card flex flex-col items-center text-center p-6">
-              <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center mb-4">
-                <Brain className="h-6 w-6 text-blue-600" />
-              </div>
-              <h3 className="text-xl font-medium mb-2">Mental Health Insights</h3>
-              <p className="text-gray-600">
-                Gain valuable insights into your thinking patterns and emotional responses.
-              </p>
             </div>
           </div>
         </div>
-      </section>
+        
+        {/* Features */}
+        <div className="bg-gray-50 py-16">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="text-center mb-12">
+              <h2 className="text-3xl font-bold text-gray-900">How Aura Plus Works</h2>
+              <p className="mt-4 text-xl text-gray-600">Simple, intuitive, and private therapy sessions</p>
+            </div>
 
-      {/* CTA Section */}
-      <section className="py-16 px-4 bg-gray-50">
-        <div className="container mx-auto text-center">
-          <h2 className="text-3xl font-bold mb-4">Begin Your Wellness Journey Today</h2>
-          <p className="text-xl text-gray-600 max-w-2xl mx-auto mb-8">
-            Take the first step toward a healthier mindset with AI-guided therapy that's available anytime, anywhere.
-          </p>
-          <Link 
-            href="/register" 
-            className="inline-flex items-center justify-center rounded-md bg-blue-600 px-8 py-3 text-lg text-white shadow-md hover:bg-blue-700 transition-colors">
-            Create Your Account
-          </Link>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+              <div className="bg-white p-6 rounded-lg shadow-sm">
+                <div className="bg-purple-100 p-3 rounded-full w-12 h-12 flex items-center justify-center mb-4">
+                  <MessageSquare className="h-6 w-6 text-purple-600" />
+                </div>
+                <h3 className="text-xl font-bold text-gray-900 mb-2">Voice Conversations</h3>
+                <p className="text-gray-600">Speak naturally and hear responses from your AI therapist through high-quality voice synthesis.</p>
+              </div>
+              
+              <div className="bg-white p-6 rounded-lg shadow-sm">
+                <div className="bg-purple-100 p-3 rounded-full w-12 h-12 flex items-center justify-center mb-4">
+                  <Brain className="h-6 w-6 text-purple-600" />
+                </div>
+                <h3 className="text-xl font-bold text-gray-900 mb-2">AI Understanding</h3>
+                <p className="text-gray-600">Powered by advanced AI to comprehend context, emotions, and provide meaningful therapeutic responses.</p>
+            </div>
+
+              <div className="bg-white p-6 rounded-lg shadow-sm">
+                <div className="bg-purple-100 p-3 rounded-full w-12 h-12 flex items-center justify-center mb-4">
+                  <Heart className="h-6 w-6 text-purple-600" />
+                </div>
+                <h3 className="text-xl font-bold text-gray-900 mb-2">Personal Support</h3>
+                <p className="text-gray-600">Get personalized support and guidance whenever you need it, completely private and secure.</p>
+              </div>
+            </div>
+          </div>
         </div>
-      </section>
-    </main>
+      </main>
+      
+      {/* Footer */}
+      <footer className="bg-white border-t">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <div className="text-center text-gray-500 text-sm">
+            <p>© 2024 Aura Plus. All rights reserved.</p>
+            <p className="mt-2">AI-powered therapy companion for your mental wellbeing.</p>
+          </div>
+        </div>
+      </footer>
+    </div>
   );
 }

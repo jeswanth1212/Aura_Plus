@@ -1,24 +1,37 @@
 import mongoose, { Document, Schema } from 'mongoose';
 
-// Message interface
-interface IMessage {
+interface Message {
   sender: 'user' | 'ai';
   text: string;
   timestamp: Date;
 }
 
-// Session interface
 export interface ISession extends Document {
-  user: mongoose.Schema.Types.ObjectId;
+  user: mongoose.Types.ObjectId;
   startTime: Date;
   endTime: Date | null;
   isActive: boolean;
-  messages: IMessage[];
-  summary: string;
+  messages: Message[];
+  summary?: string;
+  userId?: mongoose.Types.ObjectId;
+  startedAt?: Date;
+  endedAt?: Date;
+  conversation?: any[];
+  sentiment?: string;
+  voiceId?: string;
+  metadata?: {
+    clientSessionId?: string;
+    [key: string]: any;
+  };
+  mentalHealthMetrics?: {
+    anxiety?: number;
+    depression?: number;
+    stress?: number;
+    positivity?: number;
+  };
 }
 
-// Message schema
-const messageSchema = new Schema<IMessage>({
+const messageSchema = new Schema({
   sender: {
     type: String,
     enum: ['user', 'ai'],
@@ -34,36 +47,70 @@ const messageSchema = new Schema<IMessage>({
   }
 });
 
-// Session schema
 const sessionSchema = new Schema<ISession>({
   user: {
     type: Schema.Types.ObjectId,
     ref: 'User',
     required: true
   },
+  userId: {
+    type: Schema.Types.ObjectId,
+    ref: 'User'
+  },
   startTime: {
     type: Date,
-    default: Date.now,
-    required: true
+    default: Date.now
+  },
+  startedAt: {
+    type: Date
   },
   endTime: {
     type: Date,
     default: null
+  },
+  endedAt: {
+    type: Date
   },
   isActive: {
     type: Boolean,
     default: true
   },
   messages: [messageSchema],
-  summary: {
-    type: String,
-    default: ''
+  conversation: [{
+    role: {
+      type: String,
+      enum: ['user', 'assistant'],
+      required: true
+    },
+    content: {
+      type: String,
+      required: true
+    },
+    timestamp: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+  summary: String,
+  sentiment: String,
+  voiceId: String,
+  metadata: {
+    clientSessionId: String,
+    type: Map,
+    of: Schema.Types.Mixed
+  },
+  mentalHealthMetrics: {
+    anxiety: Number,
+    depression: Number,
+    stress: Number,
+    positivity: Number
   }
 }, {
   timestamps: true
 });
 
-// Index for faster queries
+// Index for faster queries by user
 sessionSchema.index({ user: 1, startTime: -1 });
+sessionSchema.index({ userId: 1, startedAt: -1 });
 
 export const Session = mongoose.model<ISession>('Session', sessionSchema); 

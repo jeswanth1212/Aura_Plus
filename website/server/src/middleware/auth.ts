@@ -1,16 +1,16 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { User } from '../models/User';
+import { User, IUser } from '../models/User';
 import mongoose from 'mongoose';
 
 interface JwtPayload {
-  userId: string;
+  id: mongoose.Types.ObjectId | string;
 }
 
 declare global {
   namespace Express {
     interface Request {
-      user?: any;
+      user?: IUser;
     }
   }
 }
@@ -34,8 +34,9 @@ export const protect = async (req: Request, res: Response, next: NextFunction) =
       // Check if token exists
       if (!token) {
         return res.status(401).json({ 
+          success: false,
           error: 'Not authorized', 
-          details: 'No token provided in Authorization header' 
+          message: 'No token provided in Authorization header' 
         });
       }
 
@@ -44,8 +45,9 @@ export const protect = async (req: Request, res: Response, next: NextFunction) =
       if (!jwtSecret) {
         console.error('JWT_SECRET is not configured');
         return res.status(500).json({ 
+          success: false,
           error: 'Server configuration error', 
-          details: 'JWT_SECRET missing' 
+          message: 'JWT configuration error' 
         });
       }
 
@@ -53,21 +55,23 @@ export const protect = async (req: Request, res: Response, next: NextFunction) =
         // Verify token
         const decoded = jwt.verify(token, jwtSecret) as JwtPayload;
 
-        // Check for valid userId
-        if (!decoded.userId || !mongoose.Types.ObjectId.isValid(decoded.userId)) {
+        // Check for valid id
+        if (!decoded.id || !mongoose.Types.ObjectId.isValid(decoded.id)) {
           return res.status(401).json({ 
+            success: false,
             error: 'Not authorized', 
-            details: 'Invalid token payload' 
+            message: 'Invalid token payload' 
           });
         }
 
         // Get user from database
-        const user = await User.findById(decoded.userId).select('-password');
+        const user = await User.findById(decoded.id).select('-password');
         
         if (!user) {
           return res.status(401).json({ 
+            success: false,
             error: 'Not authorized', 
-            details: 'User not found' 
+            message: 'User not found' 
           });
         }
 
@@ -77,35 +81,40 @@ export const protect = async (req: Request, res: Response, next: NextFunction) =
       } catch (jwtError: any) {
         if (jwtError.name === 'TokenExpiredError') {
           return res.status(401).json({ 
+            success: false,
             error: 'Not authorized', 
-            details: 'Token expired' 
+            message: 'Token expired' 
           });
         }
         
         if (jwtError.name === 'JsonWebTokenError') {
           return res.status(401).json({ 
+            success: false,
             error: 'Not authorized', 
-            details: 'Invalid token' 
+            message: 'Invalid token' 
           });
         }
         
         console.error('JWT verification error:', jwtError);
         return res.status(401).json({ 
+          success: false,
           error: 'Not authorized', 
-          details: 'Token verification failed' 
+          message: 'Token verification failed' 
         });
       }
     } else {
       return res.status(401).json({ 
+        success: false,
         error: 'Not authorized', 
-        details: 'Authorization header missing or invalid format' 
+        message: 'Authorization header missing or invalid format' 
       });
     }
   } catch (error: any) {
     console.error('Authentication middleware error:', error);
     return res.status(500).json({ 
+      success: false,
       error: 'Server error', 
-      details: 'Error processing authentication' 
+      message: 'Error processing authentication' 
     });
   }
 };
@@ -113,19 +122,62 @@ export const protect = async (req: Request, res: Response, next: NextFunction) =
 /**
  * Middleware to check if user's email is verified
  */
-export const isVerified = async (req: Request, res: Response, next: NextFunction) => {
+export const requireVerified = async (req: Request, res: Response, next: NextFunction) => {
   if (!req.user) {
     return res.status(401).json({ 
+      success: false,
       error: 'Not authorized', 
-      details: 'Authentication required' 
+      message: 'Authentication required' 
     });
   }
   
   if (!req.user.isVerified) {
     return res.status(403).json({ 
+      success: false,
       error: 'Access denied', 
-      details: 'Email verification required' 
+      message: 'Email verification required',
+      requiresVerification: true
     });
+  }
+  
+  next();
+};
+
+/**
+ * Optional middleware to check authentication without requiring it
+ * Attaches user to request if token is valid, but doesn't block the request if not
+ */
+export const optionalAuth = async (req: Request, res: Response, next: NextFunction) => {
+  let token;
+
+  // Check for Authorization header with Bearer token
+  if (
+    req.headers.authorization &&
+    req.headers.authorization.startsWith('Bearer')
+  ) {
+    try {
+      // Extract token from header
+      token = req.headers.authorization.split(' ')[1];
+
+      if (token) {
+        const jwtSecret = process.env.JWT_SECRET;
+        if (jwtSecret) {
+          // Verify token
+          const decoded = jwt.verify(token, jwtSecret) as JwtPayload;
+          
+          // Check for valid id and attach user if found
+          if (decoded.id && mongoose.Types.ObjectId.isValid(decoded.id)) {
+            const user = await User.findById(decoded.id).select('-password');
+            if (user) {
+              req.user = user;
+            }
+          }
+        }
+      }
+    } catch (error) {
+      // Don't throw errors in optional auth - just don't attach the user
+      console.debug('Optional auth error:', error);
+    }
   }
   
   next();

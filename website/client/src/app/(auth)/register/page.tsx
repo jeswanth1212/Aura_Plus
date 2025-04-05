@@ -39,10 +39,11 @@ export default function RegisterPage() {
       return;
     }
     
-    await register(name, email, password);
-    if (!error) {
-      router.push('/dashboard');
-    }
+    // Call the register function and let the middleware handle redirection
+    const result = await register(name, email, password);
+    
+    // No need to manually redirect - middleware will handle it
+    // If there's an error, we'll stay on this page
   };
 
   return (

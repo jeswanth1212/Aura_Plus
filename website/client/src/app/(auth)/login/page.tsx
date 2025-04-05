@@ -14,10 +14,12 @@ export default function LoginPage() {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    
+    // Call the login function and let the middleware handle redirection
     await login(email, password);
-    if (!error) {
-      router.push('/dashboard');
-    }
+    
+    // No need to manually redirect - middleware will handle it
+    // If there's an error, we'll stay on this page
   };
 
   return (
