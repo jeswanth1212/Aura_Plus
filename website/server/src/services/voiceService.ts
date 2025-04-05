@@ -1,18 +1,18 @@
 import axios from 'axios';
-import { User } from '../models/User';
-import { Blob } from 'buffer';
-import FormData from 'form-data';
+import dotenv from 'dotenv';
+import { ZyphraClient } from '@zyphra/client';
+
+dotenv.config();
 
 const ELEVEN_LABS_API_URL = 'https://api.elevenlabs.io/v1';
-const ELEVEN_LABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+const defaultVoiceId = 'ErXwobaYiN019PkySvjV'; // Default voice ID
 
 export class VoiceService {
   private static headers = {
-    'xi-api-key': ELEVEN_LABS_API_KEY,
-    'Content-Type': 'application/json',
+    'xi-api-key': ELEVENLABS_API_KEY || '',
   };
 
-  // Create a voice clone for a user
   static async createVoiceClone(userId: string, audioData: Buffer) {
     try {
       // Get Zyphra API key from environment variables
@@ -20,90 +20,82 @@ export class VoiceService {
       if (!ZYPHRA_API_KEY) {
         throw new Error('ZYPHRA_API_KEY not configured in server environment variables');
       }
+
+      // Create a Zyphra client instance
+      const client = new ZyphraClient({ apiKey: ZYPHRA_API_KEY });
       
-      // Convert Buffer to base64 string
+      // Convert buffer to base64
       const base64Audio = audioData.toString('base64');
       
-      // Use the Zyphra text-to-speech API with sample_audio for voice cloning
-      const ZYPHRA_API_URL = 'http://api.zyphra.com/v1/audio/text-to-speech';
+      // Generate a simple sample text for voice cloning test
+      const demoText = "This is a test of my voice clone with Zyphra";
       
-      // First make a test request with the audio to create a voice profile
-      // We use a sample test for the initial cloning
-      const response = await axios.post(
-        ZYPHRA_API_URL,
-        {
-          text: "This is a test of the voice cloning system",
-          speaking_rate: 15,
-          model: 'zonos-v0.1-transformer',
-          speaker_audio: base64Audio
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'X-API-Key': ZYPHRA_API_KEY
-          },
-          responseType: 'arraybuffer',
-        }
-      );
-
-      // Since Zyphra doesn't return a voice ID directly, we'll store the audio for reuse
-      // Generate a unique ID for this voice
-      const voiceId = `zyphra_${userId}_${Date.now()}`;
-
-      // Update user with voice ID
-      await User.findByIdAndUpdate(userId, {
-        clonedVoiceId: base64Audio, // Store the actual base64 audio to reuse
-        useClonedVoiceForNextSession: true,
-        voiceProvider: 'zyphra'
+      // Use the client to create voice clone
+      const audioResponse = await client.audio.speech.create({
+        text: demoText,
+        speaking_rate: 15,
+        model: 'zonos-v0.1-transformer',
+        speaker_audio: base64Audio
       });
-
-      return voiceId;
+      
+      // Since Zyphra doesn't return a voice ID directly, we'll store the audio for reuse
+      // Create a unique voice ID
+      const voiceId = `zyphra_${userId}_${Date.now()}`;
+      
+      return {
+        voiceId,
+        createdAt: new Date(),
+        voiceProvider: 'zyphra',
+        // Store the base64 audio so we can use it for future TTS requests
+        speakerAudio: base64Audio
+      };
     } catch (error) {
       console.error('Error creating voice clone with Zyphra:', error);
       throw error;
     }
   }
 
-  // Convert text to speech
   static async textToSpeech(text: string, voiceId?: string, useZyphra: boolean = false) {
     try {
-      const defaultVoiceId = 'ErXwobaYiN019PkySvjV'; // Default ElevenLabs voice
+      const effectiveVoiceId = voiceId || defaultVoiceId;
       
       // If useZyphra flag is set, use Zyphra TTS
       if (useZyphra) {
         return await this.zyphraTTS(text, voiceId || defaultVoiceId);
       }
       
-      // Otherwise use ElevenLabs
-      return await this.elevenLabsTTS(text, voiceId || defaultVoiceId);
+      // Otherwise use ElevenLabs as default
+      return await this.elevenLabsTTS(text, effectiveVoiceId);
     } catch (error) {
-      console.error('Error converting text to speech:', error);
+      console.error('Error in text-to-speech conversion:', error);
       throw error;
     }
   }
-  
-  // ElevenLabs TTS implementation
+
   private static async elevenLabsTTS(text: string, voiceId: string) {
     try {
       const response = await axios.post(
         `${ELEVEN_LABS_API_URL}/text-to-speech/${voiceId}`,
         {
-          text,
-          model_id: 'eleven_monolingual_v1',
+          text: text,
+          model_id: 'eleven_turbo_v2',
           voice_settings: {
-            stability: 0.75,
+            stability: 0.5,
             similarity_boost: 0.75,
           },
         },
         {
-          headers: this.headers,
+          headers: {
+            ...this.headers,
+            'Content-Type': 'application/json',
+            'Accept': 'audio/mpeg',
+          },
           responseType: 'arraybuffer',
         }
       );
-
       return response.data;
     } catch (error) {
-      console.error('Error with ElevenLabs TTS:', error);
+      console.error('Error in ElevenLabs TTS:', error);
       throw error;
     }
   }
@@ -119,29 +111,31 @@ export class VoiceService {
         throw new Error('ZYPHRA_API_KEY not configured in server environment variables');
       }
       
-      // Correct Zyphra API endpoint based on documentation
-      const ZYPHRA_API_URL = 'http://api.zyphra.com/v1/audio/text-to-speech';
+      // Create a Zyphra client instance
+      const client = new ZyphraClient({ apiKey: ZYPHRA_API_KEY });
       
-      const response = await axios.post(
-        ZYPHRA_API_URL,
-        {
-          text,
-          speaking_rate: 15,
-          model: 'zonos-v0.1-transformer', // Default model from documentation
-          mime_type: 'audio/mp3',
-          // Use voice ID as speaker_audio if available (assumes it's a base64 audio reference)
-          ...(voiceId && voiceId !== 'ErXwobaYiN019PkySvjV' ? { speaker_audio: voiceId } : {})
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'X-API-Key': ZYPHRA_API_KEY
-          },
-          responseType: 'arraybuffer',
-        }
-      );
-
-      return response.data;
+      // Parameters for TTS
+      const params: any = {
+        text: text,
+        speaking_rate: 15,
+        model: 'zonos-v0.1-transformer'
+      };
+      
+      // If voiceId is a Zyphra voice ID (it would be the base64 audio data)
+      if (voiceId && voiceId !== defaultVoiceId) {
+        params.speaker_audio = voiceId;
+      }
+      
+      // Use the client to create TTS
+      const audioBlob = await client.audio.speech.create(params);
+      
+      // Convert Blob to ArrayBuffer
+      const audioBuffer = await audioBlob.arrayBuffer();
+      
+      // Convert ArrayBuffer to Buffer for Node.js
+      const buffer = Buffer.from(audioBuffer);
+      
+      return buffer;
     } catch (error) {
       console.error('Error with Zyphra TTS, falling back to ElevenLabs:', error);
       // Fall back to ElevenLabs if Zyphra fails
