@@ -1,0 +1,206 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --calmi-yellow: #FFC107;
+  --calmi-light-gray: #F5F5F5;
+  --calmi-gray: #9E9E9E;
+  --calmi-dark-gray: #616161;
+  --calmi-white: #FFFFFF;
+}
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+  font-family: system-ui, -apple-system, sans-serif;
+  background-color: var(--calmi-white);
+  color: #333;
+}
+
+/* Custom styles for the AI orb */
+.ai-orb {
+  position: relative;
+  width: 12rem;
+  height: 12rem;
+  border-radius: 9999px;
+  background: var(--calmi-yellow);
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+}
+
+@keyframes pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 0.9;
+  }
+}
+
+/* Chat Message Styles */
+.chat-message {
+  max-width: 80%;
+  padding: 1rem;
+  border-radius: 0.5rem;
+  animation: fadeIn 0.3s ease-in-out;
+  margin-bottom: 1rem;
+}
+
+.chat-message.user {
+  margin-left: auto;
+  background-color: var(--calmi-yellow);
+  color: #333;
+}
+
+.chat-message.ai {
+  margin-right: auto;
+  background-color: var(--calmi-light-gray);
+  border: 1px solid #e5e7eb;
+}
+
+/* Session history card */
+.session-card {
+  padding: 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid #e5e7eb;
+  transition: all 0.2s ease-in-out;
+  cursor: pointer;
+  background-color: var(--calmi-white);
+}
+
+.session-card:hover {
+  border-color: var(--calmi-yellow);
+}
+
+/* Voice recording button */
+.voice-button {
+  position: relative;
+  width: 4rem;
+  height: 4rem;
+  border-radius: 9999px;
+  background-color: var(--calmi-yellow);
+  color: #333;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease-in-out;
+}
+
+.voice-button.recording {
+  animation: pulse 1.5s infinite;
+  color: #ef4444;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.dashboard-card {
+  padding: 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid #e5e7eb;
+  transition: all 0.2s ease-in-out;
+  cursor: pointer;
+  background-color: var(--calmi-white);
+}
+
+.dashboard-card:hover {
+  border-color: var(--calmi-yellow);
+}
+
+/* Calmi.so sidebar navigation */
+.nav-link {
+  display: flex;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  color: var(--calmi-gray);
+  text-decoration: none;
+  transition: color 0.2s ease;
+}
+
+.nav-link:hover {
+  color: #333;
+}
+
+.nav-link.active {
+  color: #333;
+  font-weight: 500;
+}
+
+.nav-link svg {
+  margin-right: 0.75rem;
+}
+
+/* Calmi.so button styles */
+.calmi-button {
+  background-color: var(--calmi-yellow);
+  color: #333;
+  font-weight: 500;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.5rem;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.calmi-button:hover {
+  background-color: #FFB000;
+}
+
+.calmi-button-secondary {
+  background-color: var(--calmi-light-gray);
+  color: #333;
+  font-weight: 500;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.5rem;
+  border: 1px solid #e5e7eb;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.calmi-button-secondary:hover {
+  background-color: #EEEEEE;
+}
+
+/* AI typing animation */
+.typing-animation {
+  font-size: 1rem;
+  color: #333;
+  max-width: 90%;
+  margin: 0 auto;
+  text-align: center;
+  min-height: 3rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.typing-animation-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1rem;
+  background-color: var(--calmi-dark-gray);
+  margin-left: 2px;
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+} 
